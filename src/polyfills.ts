@@ -15,3 +15,13 @@ if (typeof window !== 'undefined' && (window as any).EventEmitter) {
   const EventEmitter = require('events');
   EventEmitter.defaultMaxListeners = 20;
 }
+
+// Suppress benign Vite HMR WebSocket connection closed rejections (HMR is disabled in AI Studio)
+if (typeof window !== 'undefined') {
+  window.addEventListener('unhandledrejection', (event) => {
+    const msg = event?.reason?.message || (typeof event?.reason === 'string' ? event.reason : '');
+    if (typeof msg === 'string' && (msg.includes('WebSocket') || msg.includes('websocket'))) {
+      event.preventDefault();
+    }
+  });
+}

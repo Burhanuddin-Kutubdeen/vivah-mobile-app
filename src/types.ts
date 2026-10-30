@@ -5,13 +5,23 @@ export type FamilyValues = 'Traditional' | 'Moderate' | 'Liberal' | 'Traditional
 export type DoshaType = 'No Dosha' | 'Manglik' | 'Anshik Manglik' | 'Don\'t Know';
 
 export interface HoroscopeDetails {
-  rashi: string;
+  rashi: string; // Moon Sign / චන්ද්‍ර රාශිය
   nakshatra: string;
-  gotra: string;
-  manglikStatus: DoshaType;
+  gotra?: string;
+  manglikStatus: DoshaType | string;
   gunaScore?: number; // e.g. 32 out of 36
   timeOfBirth?: string;
   placeOfBirth?: string;
+  lagna?: string; // Ascendant / ලග්නය
+  nekatha?: string;
+  nekathaPada?: 1 | 2 | 3 | 4 | number; // පාදය (1 to 4)
+  navamshaya?: string; // නවාංශකය
+  shaniDosha?: boolean; // Shani 7/8 / සෙනසුරු අෂ්ටම
+  rahuKethuDosha?: boolean; // Rahu-Kethu / කාලසර්ප
+  planetaryPositions?: Record<number, string[]>; // 12 houses -> planets
+  kendrayaChartUrl?: string; // Uploaded Kendraya photo/PDF
+  chartImageUrl?: string;
+  horoscopeNotes?: string;
 }
 
 export interface FamilyDetails {
@@ -52,6 +62,9 @@ export interface CandidateProfile {
     country: string;
   };
   religion: string;
+  ethnicity?: string;
+  customReligion?: string;
+  customEthnicity?: string;
   motherTongue: string;
   caste: string;
   subCaste?: string;

@@ -253,6 +253,7 @@ export default function App() {
       height?: string;
       bio?: string;
       religion?: string;
+      ethnicity?: string;
       motherTongue?: string;
       caste?: string;
       maritalStatus?: string;
@@ -262,6 +263,7 @@ export default function App() {
       location?: { country?: string; city?: string; state?: string };
       photos?: string[];
       avatarUrl?: string;
+      horoscope?: any;
     }
   ) => {
     try { localStorage.setItem('vivah_onboarding_completed_v1', 'true'); } catch { /* ignore */ }
@@ -284,6 +286,7 @@ export default function App() {
       age: profileData?.age || 0,
       height: profileData?.height || '',
       religion: profileData?.religion || '',
+      ethnicity: profileData?.ethnicity || '',
       mother_tongue: profileData?.motherTongue || '',
       caste: profileData?.caste || '',
       sub_caste: '',
@@ -293,13 +296,25 @@ export default function App() {
       headline: '',
       city: locationData?.city || profileData?.location?.city || '',
       state: locationData?.state || profileData?.location?.state || '',
-      country: locationData?.country || profileData?.location?.country || 'India',
+      country: locationData?.country || profileData?.location?.country || 'Sri Lanka',
       avatar_url: profileData?.avatarUrl || profileData?.photos?.[0] || '',
       photos: profileData?.photos || [],
       profession: profileData?.profession || '',
       highest_degree: profileData?.education || '',
-      annual_income: '',
-      company_name: '',
+      rashi: profileData?.horoscope?.rashi || '',
+      lagna: profileData?.horoscope?.lagna || '',
+      nakshatra: profileData?.horoscope?.nekatha || profileData?.horoscope?.nakshatra || '',
+      nekatha_pada: profileData?.horoscope?.nekathaPada || null,
+      navamshaya: profileData?.horoscope?.navamshaya || '',
+      manglik_status: profileData?.horoscope?.manglikStatus || '',
+      horoscope_notes: profileData?.horoscope?.horoscopeNotes || '',
+      birth_time: profileData?.horoscope?.birthTime || '',
+      birth_place: profileData?.horoscope?.birthPlace || '',
+      kendraya_chart_url: profileData?.horoscope?.kendrayaChartUrl || '',
+      shani_dosha: profileData?.horoscope?.shaniDosha || false,
+      rahu_kethu_dosha: profileData?.horoscope?.rahuKethuDosha || false,
+      planetary_positions: profileData?.horoscope?.planetaryPositions || {},
+      horoscope: profileData?.horoscope || null,
       role: 'user'
     };
 

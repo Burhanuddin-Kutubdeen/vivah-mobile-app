@@ -2,12 +2,81 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Geolocation } from '@capacitor/geolocation';
 import { PushNotifications } from '@capacitor/push-notifications';
 import CountryFlag from 'react-country-flag';
+import { parsePhoneNumberFromString, CountryCode } from 'libphonenumber-js';
 import { loadOnboardingDraft, saveOnboardingDraft, clearOnboardingDraft, setOnboardingCompleted } from '../lib/onboardingDraft';
 import { syncOnboardingEntryToSupabase, resetOnboardingProfileInSupabase, getPersistentUserId } from '../lib/supabase';
-const isValidPhoneNumber = (phoneNumber: string) => {
-  // Basic validation: Check if the phone number is not empty and contains only digits
-  if (!phoneNumber) return false;
-  return /^\d+$/.test(phoneNumber) && phoneNumber.length >= 8;
+
+export interface CountryCallingInfo {
+  code: string;
+  flag: string;
+  countryCode: CountryCode;
+  name: string;
+}
+
+export const COUNTRIES_LIST: CountryCallingInfo[] = [
+  { code: '+94', flag: '🇱🇰', countryCode: 'LK', name: 'Sri Lanka' },
+  { code: '+91', flag: '🇮🇳', countryCode: 'IN', name: 'India' },
+  { code: '+1', flag: '🇺🇸', countryCode: 'US', name: 'United States' },
+  { code: '+44', flag: '🇬🇧', countryCode: 'GB', name: 'United Kingdom' },
+  { code: '+1', flag: '🇨🇦', countryCode: 'CA', name: 'Canada' },
+  { code: '+61', flag: '🇦🇺', countryCode: 'AU', name: 'Australia' },
+  { code: '+971', flag: '🇦🇪', countryCode: 'AE', name: 'United Arab Emirates' },
+  { code: '+974', flag: '🇶🇦', countryCode: 'QA', name: 'Qatar' },
+  { code: '+965', flag: '🇰🇼', countryCode: 'KW', name: 'Kuwait' },
+  { code: '+968', flag: '🇴🇲', countryCode: 'OM', name: 'Oman' },
+  { code: '+966', flag: '🇸🇦', countryCode: 'SA', name: 'Saudi Arabia' },
+  { code: '+65', flag: '🇸🇬', countryCode: 'SG', name: 'Singapore' },
+  { code: '+60', flag: '🇲🇾', countryCode: 'MY', name: 'Malaysia' },
+  { code: '+49', flag: '🇩🇪', countryCode: 'DE', name: 'Germany' },
+  { code: '+33', flag: '🇫🇷', countryCode: 'FR', name: 'France' },
+  { code: '+39', flag: '🇮🇹', countryCode: 'IT', name: 'Italy' },
+  { code: '+64', flag: '🇳🇿', countryCode: 'NZ', name: 'New Zealand' },
+  { code: '+92', flag: '🇵🇰', countryCode: 'PK', name: 'Pakistan' },
+  { code: '+880', flag: '🇧🇩', countryCode: 'BD', name: 'Bangladesh' }
+];
+
+export const isValidEmailAddress = (email: string): boolean => {
+  if (!email) return false;
+  const trimmed = email.trim();
+  // Standard RFC 5322 regex validation
+  return /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/.test(trimmed);
+};
+
+export const getPhoneValidation = (
+  number: string,
+  countryCode: CountryCode,
+  dialCode: string
+): { isValid: boolean; formatted: string; message: string } => {
+  const clean = number.trim();
+  if (!clean) {
+    return { isValid: false, formatted: '', message: 'Phone number is required.' };
+  }
+  try {
+    const full = clean.startsWith('+') ? clean : `${dialCode}${clean.replace(/^0+/, '')}`;
+    const parsed = parsePhoneNumberFromString(full, countryCode);
+    if (parsed && parsed.isValid()) {
+      return {
+        isValid: true,
+        formatted: parsed.formatInternational(),
+        message: `Valid phone number (${parsed.formatInternational()})`
+      };
+    }
+  } catch {
+    // fallback check
+  }
+  const digits = clean.replace(/\D/g, '');
+  if (digits.length >= 7 && digits.length <= 15) {
+    return {
+      isValid: true,
+      formatted: `${dialCode} ${digits}`,
+      message: `Valid number format (${dialCode} ${digits})`
+    };
+  }
+  return {
+    isValid: false,
+    formatted: '',
+    message: `Please enter a valid phone number for ${countryCode}.`
+  };
 };
 import {
   Heart,
@@ -64,10 +133,20 @@ import {
   School,
   MoreVertical,
   Baby,
-  SlidersHorizontal
+  SlidersHorizontal,
+  Flame,
+  Sun,
+  Moon
 } from 'lucide-react';
 import { FilterState } from '../types';
 import { toPascalCase, isValidNameString, calculateAge, getDaysInMonth } from '../lib/formatters';
+import {
+  RELIGION_OPTIONS,
+  ETHNICITY_OPTIONS,
+  SRI_LANKAN_LAGNA_SIGNS,
+  SRI_LANKAN_NEKATH,
+  validateSriLankanHoroscopeText
+} from '../lib/sriLankanHoroscope';
 
 interface OnboardingScreenProps {
   onComplete: (
@@ -81,6 +160,7 @@ interface OnboardingScreenProps {
       height?: string;
       bio?: string;
       religion?: string;
+      ethnicity?: string;
       motherTongue?: string;
       caste?: string;
       maritalStatus?: string;
@@ -90,6 +170,7 @@ interface OnboardingScreenProps {
       location?: { country?: string; city?: string; state?: string };
       photos?: string[];
       avatarUrl?: string;
+      horoscope?: any;
     }
   ) => void;
   onExit?: () => void;
@@ -265,7 +346,7 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete, 
   const isResumed = Boolean(saved && typeof saved.currentStep === 'number' && saved.currentStep > 0);
 
   const [currentStep, setCurrentStep] = useState<number>(() => {
-    if (saved && typeof saved.currentStep === 'number' && saved.currentStep >= 0 && saved.currentStep < 15) {
+    if (saved && typeof saved.currentStep === 'number' && saved.currentStep >= 0 && saved.currentStep < 16) {
       return saved.currentStep;
     }
     return 0;
@@ -338,6 +419,19 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete, 
   const [marriageConfirmation, setMarriageConfirmation] = useState<boolean>(saved?.marriageConfirmation ?? false);
   const [lifeBackgroundError, setLifeBackgroundError] = useState<string | null>(null);
 
+  // Faith & Heritage State (Religion, Ethnicity, and Optional Sri Lankan Horoscope)
+  const [religion, setReligion] = useState<string>(saved?.religion || '');
+  const [customReligion, setCustomReligion] = useState<string>(saved?.customReligion || '');
+  const [ethnicity, setEthnicity] = useState<string>(saved?.ethnicity || '');
+  const [customEthnicity, setCustomEthnicity] = useState<string>(saved?.customEthnicity || '');
+  const [caste, setCaste] = useState<string>(saved?.caste || '');
+  const [manglikStatus, setManglikStatus] = useState<string>(saved?.manglikStatus || '');
+  const [lagna, setLagna] = useState<string>(saved?.lagna || '');
+  const [nekatha, setNekatha] = useState<string>(saved?.nekatha || '');
+  const [horoscopeNotes, setHoroscopeNotes] = useState<string>(saved?.horoscopeNotes || '');
+  const [faithHeritageError, setFaithHeritageError] = useState<string | null>(null);
+  const [horoscopeTextError, setHoroscopeTextError] = useState<string | null>(null);
+
   // Photos state (3 mandatory photos: 1 main + 2 additional)
   const [mainPhoto, setMainPhoto] = useState<string>(saved?.mainPhoto || '');
   const [photo2, setPhoto2] = useState<string>(saved?.photo2 || '');
@@ -363,47 +457,83 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete, 
   // Contact Info State
   const [emailAddress, setEmailAddress] = useState<string>(saved?.emailAddress || '');
   const [phoneNumber, setPhoneNumber] = useState<string>(saved?.phoneNumber || '');
-  const [detectedPhoneInfo, setDetectedPhoneInfo] = useState<{ code: string; flag: string; countryCode: string }>(
-    saved?.detectedPhoneInfo || { code: '+91', flag: '🇮🇳', countryCode: 'IN' }
-  );
+  const [detectedPhoneInfo, setDetectedPhoneInfo] = useState<{ code: string; flag: string; countryCode: string }>(() => {
+    if (saved?.detectedPhoneInfo) return saved.detectedPhoneInfo;
+    return { code: '+94', flag: '🇱🇰', countryCode: 'LK' };
+  });
   const [showCountryPicker, setShowCountryPicker] = useState<boolean>(false);
 
-  // List of countries with their codes and flags
-  const countries = [
-    { code: '+91', flag: '🇮🇳', countryCode: 'IN', name: 'India' },
-    { code: '+1', flag: '🇺🇸', countryCode: 'US', name: 'USA' },
-    { code: '+44', flag: '🇬🇧', countryCode: 'GB', name: 'UK' },
-    { code: '+92', flag: '🇵🇰', countryCode: 'PK', name: 'Pakistan' },
-    { code: '+971', flag: '🇦🇪', countryCode: 'AE', name: 'UAE' },
-    { code: '+65', flag: '🇸🇬', countryCode: 'SG', name: 'Singapore' },
-    { code: '+60', flag: '🇲🇾', countryCode: 'MY', name: 'Malaysia' },
-    { code: '+974', flag: '🇶🇦', countryCode: 'QA', name: 'Qatar' },
-    { code: '+965', flag: '🇰🇼', countryCode: 'KW', name: 'Kuwait' },
-    { code: '+968', flag: '🇴🇲', countryCode: 'OM', name: 'Oman' },
-    { code: '+973', flag: '🇧🇭', countryCode: 'BH', name: 'Bahrain' }
-  ];
+  // Auto-detect user's country based on Step 6 location selection
+  useEffect(() => {
+    if (!country) return;
+    const cName = country.trim().toLowerCase();
+    const match = COUNTRIES_LIST.find(
+      (c) =>
+        c.name.toLowerCase() === cName ||
+        (cName.includes('lanka') && c.countryCode === 'LK') ||
+        (cName.includes('india') && c.countryCode === 'IN') ||
+        ((cName.includes('united states') || cName === 'usa' || cName === 'us') && c.countryCode === 'US') ||
+        ((cName.includes('united kingdom') || cName === 'uk') && c.countryCode === 'GB') ||
+        (cName.includes('canada') && c.countryCode === 'CA') ||
+        (cName.includes('australia') && c.countryCode === 'AU') ||
+        ((cName.includes('emirates') || cName === 'uae') && c.countryCode === 'AE') ||
+        (cName.includes('qatar') && c.countryCode === 'QA') ||
+        (cName.includes('kuwait') && c.countryCode === 'KW') ||
+        (cName.includes('oman') && c.countryCode === 'OM') ||
+        (cName.includes('saudi') && c.countryCode === 'SA') ||
+        (cName.includes('singapore') && c.countryCode === 'SG') ||
+        (cName.includes('malaysia') && c.countryCode === 'MY') ||
+        (cName.includes('germany') && c.countryCode === 'DE') ||
+        (cName.includes('france') && c.countryCode === 'FR') ||
+        (cName.includes('italy') && c.countryCode === 'IT') ||
+        (cName.includes('pakistan') && c.countryCode === 'PK')
+    );
+    if (match) {
+      setDetectedPhoneInfo({ code: match.code, flag: match.flag, countryCode: match.countryCode });
+    }
+  }, [country]);
 
-  // Helper function to get country flag
-  const getCountryFlag = (countryCode: string) => {
-    return countryCode === 'IN' ? '🇮🇳' : countryCode;
+  // Handle phone number input with automatic international dialing code detection
+  const handlePhoneInputChange = (rawVal: string) => {
+    let val = rawVal;
+    if (val.startsWith('+') || val.startsWith('00')) {
+      const formatted = val.startsWith('00') ? '+' + val.slice(2) : val;
+      try {
+        const parsed = parsePhoneNumberFromString(formatted);
+        if (parsed && parsed.country) {
+          const found = COUNTRIES_LIST.find((c) => c.countryCode === parsed.country);
+          if (found) {
+            setDetectedPhoneInfo({ code: found.code, flag: found.flag, countryCode: found.countryCode });
+            setPhoneNumber(parsed.nationalNumber);
+            if (contactError) setContactError(null);
+            return;
+          }
+        }
+      } catch {}
+    }
+
+    // Check if user entered dial prefix without plus sign
+    for (const c of COUNTRIES_LIST) {
+      const prefix = c.code.replace('+', '');
+      if (val.length > prefix.length + 5 && val.startsWith(prefix)) {
+        setDetectedPhoneInfo({ code: c.code, flag: c.flag, countryCode: c.countryCode });
+        setPhoneNumber(val.slice(prefix.length));
+        if (contactError) setContactError(null);
+        return;
+      }
+    }
+
+    const digitsOnly = val.replace(/[^0-9]/g, '');
+    setPhoneNumber(digitsOnly);
+    if (contactError) setContactError(null);
   };
 
-  // Auto-detect user's country based on locale (only if not restored from draft)
-  useEffect(() => {
-    if (saved?.detectedPhoneInfo) return;
-    const userLocale = navigator.language || 'en-US';
-    const countryCode = userLocale.split('-')[1] || 'IN';
-    const flag = getCountryFlag(countryCode);
-    
-    // Find the country in the list based on the detected country code
-    const country = countries.find(c => c.countryCode === countryCode);
-    if (country) {
-      setDetectedPhoneInfo({ code: country.code, flag: country.flag, countryCode: country.countryCode });
-    } else {
-      // Default to India if country not found
-      setDetectedPhoneInfo({ code: '+91', flag: '🇮🇳', countryCode: 'IN' });
-    }
-  }, []);
+  const phoneValidationStatus = getPhoneValidation(
+    phoneNumber,
+    (detectedPhoneInfo.countryCode as CountryCode) || 'LK',
+    detectedPhoneInfo.code
+  );
+
   const [contactError, setContactError] = useState<string | null>(null);
 
   // Verification State
@@ -424,6 +554,203 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete, 
   const [isScanning, setIsScanning] = useState<boolean>(false);
   const [faceAligned, setFaceAligned] = useState<boolean>(false);
   const [verificationError, setVerificationError] = useState<string | null>(null);
+
+  // Live Front Camera & AI Face Verification State
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
+  const [cameraStatus, setCameraStatus] = useState<'idle' | 'starting' | 'active' | 'denied' | 'unsupported'>('idle');
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [capturedSelfie, setCapturedSelfie] = useState<string | null>(null);
+  const [isVerifyingFace, setIsVerifyingFace] = useState<boolean>(false);
+  const [aiVerificationResult, setAiVerificationResult] = useState<{
+    approved: boolean;
+    confidenceScore: number;
+    reason: string;
+  } | null>(null);
+  const [aiVerificationError, setAiVerificationError] = useState<string | null>(null);
+
+  // Stop camera tracks cleanly
+  const stopFrontCamera = () => {
+    if (cameraStream) {
+      cameraStream.getTracks().forEach((track) => {
+        try {
+          track.stop();
+        } catch {}
+      });
+      setCameraStream(null);
+    }
+    setCameraStatus('idle');
+  };
+
+  const selfieFileInputRef = useRef<HTMLInputElement>(null);
+
+  // Reusable AI face verification against reference profile photo
+  const runAIFaceVerification = async (selfieBase64: string) => {
+    setIsVerifyingFace(true);
+    setAiVerificationError(null);
+    setAiVerificationResult(null);
+
+    try {
+      const referencePhoto = mainPhoto || photo2 || photo3 || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=500&auto=format&fit=crop&q=80';
+
+      const response = await fetch('/api/gemini/verify-face', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          uploadedPhoto: referencePhoto,
+          capturedFace: selfieBase64
+        })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || 'Face verification service was unable to process the comparison.');
+      }
+
+      setAiVerificationResult({
+        approved: Boolean(data.approved),
+        confidenceScore: data.confidenceScore ?? (data.approved ? 94 : 32),
+        reason: data.reason || (data.approved ? 'Face match approved with your uploaded profile photo.' : 'Facial comparison does not match profile photo.')
+      });
+
+      if (data.approved) {
+        setSelfieVerified(true);
+        stopFrontCamera();
+      }
+    } catch (err: any) {
+      console.error('Face verification request error:', err);
+      setAiVerificationError(err?.message || 'Face verification failed. Please try again.');
+    } finally {
+      setIsVerifyingFace(false);
+    }
+  };
+
+  // Start front-facing camera with multi-tier fallback
+  const startFrontCamera = async () => {
+    setCameraStatus('starting');
+    setCameraError(null);
+    setAiVerificationError(null);
+    setAiVerificationResult(null);
+    setCapturedSelfie(null);
+
+    // If mediaDevices is missing in this browser environment
+    if (!navigator?.mediaDevices?.getUserMedia) {
+      setCameraStatus('unsupported');
+      setCameraError('Live browser camera is not directly available in this environment. You can use your device camera or upload a selfie directly.');
+      return;
+    }
+
+    try {
+      if (cameraStream) {
+        cameraStream.getTracks().forEach((track) => track.stop());
+        setCameraStream(null);
+      }
+
+      let stream: MediaStream | null = null;
+      // Tier 1: Try front camera with facingMode: 'user'
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: 'user',
+            width: { ideal: 640 },
+            height: { ideal: 640 }
+          },
+          audio: false
+        });
+      } catch {
+        // Tier 2: Try basic video constraints without resolution/facingMode specifics
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: false
+        });
+      }
+
+      if (stream) {
+        setCameraStream(stream);
+        setCameraStatus('active');
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          videoRef.current.play().catch(() => {});
+        }
+      }
+    } catch (err: any) {
+      console.warn('Front camera access notice:', err?.name || err?.message || err);
+      setCameraStatus('denied');
+      setCameraError(
+        err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError' || err?.message?.includes('Permission denied')
+          ? 'Front camera permission is currently blocked by your browser settings or iframe security. You can click Retry Camera or take a selfie using your native device camera below.'
+          : 'Could not connect to front camera. You can take a selfie directly using your device camera.'
+      );
+    }
+  };
+
+  // Attach camera stream to video element
+  useEffect(() => {
+    if (videoRef.current && cameraStream && cameraStatus === 'active') {
+      videoRef.current.srcObject = cameraStream;
+      videoRef.current.play().catch(() => {});
+    }
+  }, [cameraStream, cameraStatus]);
+
+  // Clean up camera on unmount
+  useEffect(() => {
+    return () => {
+      if (cameraStream) {
+        cameraStream.getTracks().forEach((track) => track.stop());
+      }
+    };
+  }, [cameraStream]);
+
+  // Capture face snapshot from video feed and verify with Gemini AI
+  const handleCaptureAndVerifyFace = async () => {
+    if (!videoRef.current || cameraStatus !== 'active') return;
+    const video = videoRef.current;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth || 640;
+    canvas.height = video.videoHeight || 640;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    // Flip horizontally to match selfie mirror
+    ctx.translate(canvas.width, 0);
+    ctx.scale(-1, 1);
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const selfieBase64 = canvas.toDataURL('image/jpeg', 0.88);
+    setCapturedSelfie(selfieBase64);
+
+    await runAIFaceVerification(selfieBase64);
+  };
+
+  // Handle native camera capture or image selection fallback
+  const handleSelfieFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      const dataUrl = event.target?.result as string;
+      if (dataUrl) {
+        setCapturedSelfie(dataUrl);
+        setCameraStatus('idle');
+        stopFrontCamera();
+        await runAIFaceVerification(dataUrl);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleRetakeFrontSelfie = () => {
+    setCapturedSelfie(null);
+    setAiVerificationResult(null);
+    setAiVerificationError(null);
+    startFrontCamera();
+  };
+
+  const handleCloseVerificationModal = () => {
+    stopFrontCamera();
+    setIsVerificationModalOpen(false);
+  };
 
   // Auto-save draft on any change
   useEffect(() => {
@@ -459,6 +786,15 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete, 
       datingIntentions,
       showDatingIntentionsOnProfile,
       marriageConfirmation,
+      religion,
+      customReligion,
+      ethnicity,
+      customEthnicity,
+      caste,
+      manglikStatus,
+      lagna,
+      nekatha,
+      horoscopeNotes,
       mainPhoto,
       photo2,
       photo3,
@@ -506,6 +842,15 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete, 
     datingIntentions,
     showDatingIntentionsOnProfile,
     marriageConfirmation,
+    religion,
+    customReligion,
+    ethnicity,
+    customEthnicity,
+    caste,
+    manglikStatus,
+    lagna,
+    nekatha,
+    horoscopeNotes,
     mainPhoto,
     photo2,
     photo3,
@@ -531,23 +876,36 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete, 
     const city = parts[0] || '';
     const state = parts[1] || '';
     const photosList = [mainPhoto, photo2, photo3].filter(Boolean);
+    const effectiveReligion = religion === 'Other' ? customReligion.trim() : religion;
+    const effectiveEthnicity = ethnicity === 'Other' ? customEthnicity.trim() : ethnicity;
 
     const debounceTimer = setTimeout(() => {
+      const dobFormatted = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}-${String(currentEffectiveDay).padStart(2, '0')}`;
       syncOnboardingEntryToSupabase(effectiveUserId, {
         onboarding_step: currentStep,
         onboarding_completed: false,
         name: firstName ? toPascalCase(firstName) : '',
         gender: userGender || '',
         age: calculatedAge || 0,
+        dob: dobFormatted,
+        birth_date: dobFormatted,
+        date_of_birth: dobFormatted,
         height: heightStr,
         city,
         state,
-        country: country || 'India',
+        country: country || 'Sri Lanka',
         education: educationLevel || '',
         highest_degree: educationLevel || '',
         school_or_university: schoolOrUniversity || '',
         profession: profession || '',
         marital_status: userRelationshipStatus || maritalStatus || '',
+        religion: effectiveReligion || '',
+        ethnicity: effectiveEthnicity || '',
+        caste: caste.trim() || '',
+        manglik_status: manglikStatus || '',
+        rashi: lagna || '',
+        nakshatra: nekatha || '',
+        horoscope_notes: horoscopeNotes || '',
         photos: photosList,
         avatar_url: mainPhoto || '',
         bio: aboutMe || '',
@@ -570,6 +928,15 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete, 
     profession,
     userRelationshipStatus,
     maritalStatus,
+    religion,
+    customReligion,
+    ethnicity,
+    customEthnicity,
+    caste,
+    manglikStatus,
+    lagna,
+    nekatha,
+    horoscopeNotes,
     mainPhoto,
     photo2,
     photo3,
@@ -580,7 +947,7 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete, 
     setShowRestartModal(false);
     clearOnboardingDraft();
 
-    // Overwrite the EXACT SAME line in profiles table in Supabase so no extra rows are created
+    // Overwrite the EXACT SAME line in profiles and user_details tables in Supabase so no extra rows are created
     await resetOnboardingProfileInSupabase(effectiveUserId);
 
     setCurrentStep(0);
@@ -622,6 +989,17 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete, 
     setShowDatingIntentionsOnProfile(true);
     setMarriageConfirmation(false);
     setLifeBackgroundError(null);
+    setReligion('');
+    setCustomReligion('');
+    setEthnicity('');
+    setCustomEthnicity('');
+    setCaste('');
+    setManglikStatus('');
+    setLagna('');
+    setNekatha('');
+    setHoroscopeNotes('');
+    setFaithHeritageError(null);
+    setHoroscopeTextError(null);
     setMainPhoto('');
     setPhoto2('');
     setPhoto3('');
@@ -671,7 +1049,7 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete, 
     setPhotosError(null);
   };
 
-  const totalSteps = 15;
+  const totalSteps = 16;
 
   const INTEREST_CATEGORIES = [
     {
@@ -1039,23 +1417,53 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete, 
     }
 
     if (currentStep === 8) {
-      if (!mainPhoto || !photo2 || !photo3) {
-        setPhotosError('All 3 photos are mandatory (1 Main Photo and 2 Additional Photos). Please upload or select 3 photos.');
+      if (!religion) {
+        setFaithHeritageError('Please select your religion to proceed.');
         return;
       }
-      setPhotosError(null);
+      if (religion === 'Other' && !customReligion.trim()) {
+        setFaithHeritageError('Please specify your religion in the provided field.');
+        return;
+      }
+      if (!ethnicity) {
+        setFaithHeritageError('Please select your ethnicity to proceed.');
+        return;
+      }
+      if (ethnicity === 'Other' && !customEthnicity.trim()) {
+        setFaithHeritageError('Please specify your ethnicity in the provided field.');
+        return;
+      }
+      if (horoscopeNotes.trim()) {
+        const validation = validateSriLankanHoroscopeText(horoscopeNotes);
+        if (!validation.isValid) {
+          setHoroscopeTextError(validation.message || 'Please enter valid Sri Lankan astrological/Kendraya details or leave blank.');
+          return;
+        }
+      }
+      setFaithHeritageError(null);
+      setHoroscopeTextError(null);
       setCurrentStep(9);
       return;
     }
 
     if (currentStep === 9) {
-      // Step 9: Share something about yourself (Optional)
+      if (!mainPhoto || !photo2 || !photo3) {
+        setPhotosError('All 3 photos are mandatory (1 Main Photo and 2 Additional Photos). Please upload or select 3 photos.');
+        return;
+      }
+      setPhotosError(null);
       setCurrentStep(10);
       return;
     }
 
     if (currentStep === 10) {
-      // Step 10: What are your interests? (Max 6 total, up to 3 per section)
+      // Step 10: Share something about yourself (Optional)
+      setCurrentStep(11);
+      return;
+    }
+
+    if (currentStep === 11) {
+      // Step 11: What are your interests? (Max 6 total, up to 3 per section)
       const totalSelected = Object.values(selectedInterests).flat().length;
       if (totalSelected > 6) {
         setInterestsError('Maximum 6 interests allowed. Please deselect some to continue.');
@@ -1066,41 +1474,60 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete, 
         return;
       }
       setInterestsError(null);
-      setCurrentStep(11);
-      return;
-    }
-
-    if (currentStep === 11) {
-      // Step 11: Show your personality off! (Prompts - Optional)
       setCurrentStep(12);
       return;
     }
 
     if (currentStep === 12) {
-      // Step 12: What's your email address? (Email & Phone Number)
-      if (!emailAddress.trim() || !emailAddress.includes('@')) {
-        setContactError('Please enter a valid email address.');
-        return;
-      }
-      setContactError(null);
+      // Step 12: Show your personality off! (Prompts - Optional)
       setCurrentStep(13);
       return;
     }
 
     if (currentStep === 13) {
-      // Step 13: Complete profile verification (Selfie Required)
-      if (!selfieVerified) {
-        setVerificationError('Selfie face verification is required to build trust and continue.');
-        setIsVerificationModalOpen(true);
+      // Step 13 (Step 14 to user): Email & Phone Number Validation
+      if (!emailAddress.trim()) {
+        setContactError('Please enter your email address to proceed.');
         return;
       }
-      setVerificationError(null);
+      if (!isValidEmailAddress(emailAddress)) {
+        setContactError('Please enter a valid email address format (e.g. name@domain.com).');
+        return;
+      }
+      if (!phoneNumber.trim()) {
+        setContactError('Please enter your phone number to proceed.');
+        return;
+      }
+      const phoneValidation = getPhoneValidation(
+        phoneNumber,
+        (detectedPhoneInfo.countryCode as CountryCode) || 'LK',
+        detectedPhoneInfo.code
+      );
+      if (!phoneValidation.isValid) {
+        setContactError(phoneValidation.message || 'Please enter a valid phone number for the selected country code.');
+        return;
+      }
+      setContactError(null);
       setCurrentStep(14);
       return;
     }
 
     if (currentStep === 14) {
-      // Step 14: Profile Preview -> Complete
+      // Step 14 (Step 15 to user): Complete profile verification (Front camera & AI face match required)
+      if (!selfieVerified) {
+        setVerificationError('Live face verification is required to confirm your identity.');
+        setIsVerificationModalOpen(true);
+        setVerificationStep('selfie_scan');
+        startFrontCamera();
+        return;
+      }
+      setVerificationError(null);
+      setCurrentStep(15);
+      return;
+    }
+
+    if (currentStep === 15) {
+      // Step 15: Profile Preview -> Complete
       handleFinish();
       return;
     }
@@ -1143,50 +1570,100 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete, 
     // Parse pulledLocation into city/state (format: "City, State, Country")
     const parts = pulledLocation.split(',').map((p) => p.trim());
     const locationData = {
-      country: country || undefined,
+      country: country || 'Sri Lanka',
       city: parts[0] || undefined,
       state: parts[1] || undefined
     };
-    const totalHeightInches = heightFeet !== '' && heightInches !== '' ? (Number(heightFeet) * 12 + Number(heightInches)) : undefined;
+    const effectiveReligion = religion === 'Other' ? customReligion.trim() : religion;
+    const effectiveEthnicity = ethnicity === 'Other' ? customEthnicity.trim() : ethnicity;
+
     const profileData = {
       name: formattedName,
       gender: userGender || undefined,
       age: calculatedAge,
       height: heightFeet !== '' && heightInches !== '' ? `${heightFeet}' ${heightInches}"` : undefined,
       bio: aboutMe.trim() || undefined,
-      religion: undefined, // Not collected in onboarding
-      motherTongue: undefined, // Not collected in onboarding
-      caste: undefined, // Not collected in onboarding
-      maritalStatus: maritalStatus || undefined,
-      diet: undefined, // Not collected in onboarding
+      religion: effectiveReligion || undefined,
+      ethnicity: effectiveEthnicity || undefined,
+      motherTongue: undefined,
+      caste: caste.trim() || undefined,
+      maritalStatus: userRelationshipStatus || maritalStatus || undefined,
+      diet: undefined,
       education: educationLevel || undefined,
       profession: profession || undefined,
       location: locationData,
       photos: [mainPhoto, photo2, photo3].filter(Boolean) as string[],
-      avatarUrl: mainPhoto || undefined
+      avatarUrl: mainPhoto || undefined,
+      horoscope: {
+        rashi: lagna || '',
+        nakshatra: nekatha || '',
+        gotra: '',
+        manglikStatus: (manglikStatus === 'Manglik' ? 'Manglik' : manglikStatus === 'Non-Manglik' ? 'No Dosha' : 'Don\'t Know') as any,
+        lagna,
+        nekatha,
+        horoscopeNotes
+      }
     };
 
     // Mark onboarding complete & clear draft
     setOnboardingCompleted();
 
-    // Final write into Supabase profiles on the exact same row (overwriting in-place)
+    // Final write into Supabase profiles and user_details on the exact same row (overwriting in-place)
+    const dobFormatted = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}-${String(currentEffectiveDay).padStart(2, '0')}`;
     syncOnboardingEntryToSupabase(effectiveUserId, {
-      onboarding_step: 14,
+      onboarding_step: 15,
       onboarding_completed: true,
       onboarding_completed_at: new Date().toISOString(),
       name: formattedName,
+      first_name: formattedName,
       gender: userGender || '',
+      user_gender: userGender || '',
       age: calculatedAge,
+      dob: dobFormatted,
+      birth_date: dobFormatted,
+      date_of_birth: dobFormatted,
+      height_feet: heightFeet !== '' ? Number(heightFeet) : null,
+      height_inches: heightInches !== '' ? Number(heightInches) : null,
       height: heightFeet !== '' && heightInches !== '' ? `${heightFeet}' ${heightInches}"` : '',
       city: locationData.city || '',
       state: locationData.state || '',
-      country: locationData.country || 'India',
+      country: locationData.country || 'Sri Lanka',
+      pulled_location: pulledLocation || null,
       education: educationLevel || '',
+      education_level: educationLevel || '',
       highest_degree: educationLevel || '',
+      school_or_university: schoolOrUniversity || '',
       profession: profession || '',
-      marital_status: maritalStatus || '',
+      marital_status: userRelationshipStatus || maritalStatus || '',
+      user_relationship_status: userRelationshipStatus || maritalStatus || '',
+      have_kids: haveKids || '',
+      show_have_kids_on_profile: showHaveKidsOnProfile,
+      want_kids: wantKids || '',
+      show_want_kids_on_profile: showWantKidsOnProfile,
+      dating_intentions: datingIntentions || '',
+      show_dating_intentions_on_profile: showDatingIntentionsOnProfile,
+      religion: effectiveReligion || '',
+      ethnicity: effectiveEthnicity || '',
+      caste: caste.trim() || '',
+      manglik_status: manglikStatus || '',
+      rashi: lagna || '',
+      nakshatra: nekatha || '',
+      horoscope_notes: horoscopeNotes || '',
       bio: aboutMe.trim() || '',
+      about_me: aboutMe.trim() || '',
+      selected_interests: selectedInterests,
+      selected_prompt: selectedPrompt || '',
+      prompt_answer: promptAnswer || '',
+      email_address: emailAddress || '',
+      phone_number: phoneNumber || '',
+      selfie_verified: selfieVerified,
+      id_uploaded: idUploaded,
+      id_front_image: idFrontImage,
+      id_back_image: idBackImage,
       photos: [mainPhoto, photo2, photo3].filter(Boolean) as string[],
+      main_photo: mainPhoto || '',
+      photo_2: photo2 || null,
+      photo_3: photo3 || null,
       avatar_url: mainPhoto || '',
     });
 
@@ -1216,7 +1693,8 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete, 
     (currentStep === 5 && (heightFeet === '' || heightInches === '')) ||
     (currentStep === 6 && (!hasPulledLocation || !country.trim() || !pulledLocation.trim())) ||
     (currentStep === 7 && (!educationLevel || !userRelationshipStatus || !haveKids || !wantKids || !datingIntentions || !marriageConfirmation)) ||
-    (currentStep === 8 && (!mainPhoto || !photo2 || !photo3));
+    (currentStep === 8 && (!religion || (religion === 'Other' && !customReligion.trim()) || !ethnicity || (ethnicity === 'Other' && !customEthnicity.trim()))) ||
+    (currentStep === 9 && (!mainPhoto || !photo2 || !photo3));
 
   return (
     <div className="absolute inset-0 z-50 bg-[#f8f7f2] text-[#2A2A2A] flex flex-col justify-between overflow-hidden animate-fadeIn font-sans">
@@ -2149,8 +2627,342 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete, 
           </div>
         )}
 
-        {/* SLIDE 8: Add Your Pictures (1 Main + 2 Additional, mandatory) */}
+        {/* SLIDE 8: Faith & Heritage (Religion, Ethnicity, and Optional Sri Lankan Horoscope) */}
         {currentStep === 8 && (
+          <div className="flex flex-col items-center text-center space-y-5 animate-fadeIn w-full max-w-md mx-auto">
+            <div className="space-y-2">
+              <span className="inline-block px-3.5 py-1 bg-[#5A5A40]/10 text-[#5A5A40] border border-[#5A5A40]/20 rounded-full text-[11px] font-bold uppercase tracking-wider">
+                Build your profile • Step 8
+              </span>
+              <h1 className="text-2xl sm:text-3xl font-serif font-bold text-[#2A2A2A] tracking-tight">
+                Faith &amp; Heritage
+              </h1>
+              <p className="text-xs sm:text-sm text-[#5A5A40] font-medium leading-relaxed">
+                Please share your religion and ethnicity. Sri Lankan horoscope and Kendraya details are optional.
+              </p>
+            </div>
+
+            <div className="w-full bg-white p-5 rounded-2xl border border-[#5A5A40]/20 shadow-xs space-y-4 text-left">
+              {/* SECTION 1: RELIGION (Mandatory) */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-[#5A5A40] uppercase tracking-wider flex items-center gap-1.5">
+                    <Sparkles className="w-4 h-4 text-[#5A5A40]" />
+                    <span>Religion</span>
+                  </label>
+                  <span className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">
+                    Required
+                  </span>
+                </div>
+                <select
+                  value={religion}
+                  onChange={(e) => {
+                    setReligion(e.target.value);
+                    if (e.target.value !== 'Other') {
+                      setCustomReligion('');
+                    }
+                    if (faithHeritageError) setFaithHeritageError(null);
+                  }}
+                  className="w-full p-3.5 bg-[#f8f7f2] border border-[#5A5A40]/30 rounded-xl text-xs sm:text-sm font-semibold text-[#2A2A2A] focus:outline-none focus:border-[#5A5A40] focus:ring-2 focus:ring-[#5A5A40]/20 cursor-pointer"
+                >
+                  <option value="" disabled hidden>
+                    Select Religion
+                  </option>
+                  {RELIGION_OPTIONS.map((opt) => (
+                    <option key={opt} value={opt}>
+                      {opt}
+                    </option>
+                  ))}
+                </select>
+
+                {/* Conditional Other Religion Input */}
+                {religion === 'Other' && (
+                  <div className="pt-2 animate-fadeIn space-y-1">
+                    <label className="text-[11px] font-bold text-[#2A2A2A] block">
+                      Specify Religion <span className="text-rose-600">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={customReligion}
+                      onChange={(e) => {
+                        setCustomReligion(e.target.value);
+                        if (faithHeritageError) setFaithHeritageError(null);
+                      }}
+                      placeholder="Please enter your religion"
+                      className="w-full py-3 px-3.5 bg-[#f8f7f2] border border-[#5A5A40]/30 rounded-xl text-xs sm:text-sm font-semibold text-[#2A2A2A] placeholder:text-[#5A5A40]/40 focus:outline-none focus:border-[#5A5A40] focus:ring-2 focus:ring-[#5A5A40]/20"
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* SECTION 2: ETHNICITY (Mandatory) */}
+              <div className="pt-3 border-t border-[#5A5A40]/15 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-[#5A5A40] uppercase tracking-wider flex items-center gap-1.5">
+                    <Globe className="w-4 h-4 text-[#5A5A40]" />
+                    <span>Ethnicity</span>
+                  </label>
+                  <span className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">
+                    Required
+                  </span>
+                </div>
+                <select
+                  value={ethnicity}
+                  onChange={(e) => {
+                    setEthnicity(e.target.value);
+                    if (e.target.value !== 'Other') {
+                      setCustomEthnicity('');
+                    }
+                    if (faithHeritageError) setFaithHeritageError(null);
+                  }}
+                  className="w-full p-3.5 bg-[#f8f7f2] border border-[#5A5A40]/30 rounded-xl text-xs sm:text-sm font-semibold text-[#2A2A2A] focus:outline-none focus:border-[#5A5A40] focus:ring-2 focus:ring-[#5A5A40]/20 cursor-pointer"
+                >
+                  <option value="" disabled hidden>
+                    Select Ethnicity
+                  </option>
+                  {ETHNICITY_OPTIONS.map((opt) => (
+                    <option key={opt} value={opt}>
+                      {opt}
+                    </option>
+                  ))}
+                </select>
+
+                {/* Conditional Other Ethnicity Input */}
+                {ethnicity === 'Other' && (
+                  <div className="pt-2 animate-fadeIn space-y-1">
+                    <label className="text-[11px] font-bold text-[#2A2A2A] block">
+                      Specify Ethnicity <span className="text-rose-600">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={customEthnicity}
+                      onChange={(e) => {
+                        setCustomEthnicity(e.target.value);
+                        if (faithHeritageError) setFaithHeritageError(null);
+                      }}
+                      placeholder="Please enter your ethnicity"
+                      className="w-full py-3 px-3.5 bg-[#f8f7f2] border border-[#5A5A40]/30 rounded-xl text-xs sm:text-sm font-semibold text-[#2A2A2A] placeholder:text-[#5A5A40]/40 focus:outline-none focus:border-[#5A5A40] focus:ring-2 focus:ring-[#5A5A40]/20"
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* SECTION 2.5: CASTE (Optional) */}
+              <div className="pt-3 border-t border-[#5A5A40]/15 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-[#5A5A40] uppercase tracking-wider flex items-center gap-1.5">
+                    <Users className="w-4 h-4 text-[#5A5A40]" />
+                    <span>Caste</span>
+                  </label>
+                  <span className="text-[10px] font-bold text-stone-600 bg-stone-100 border border-stone-200 px-2 py-0.5 rounded-full">
+                    Optional
+                  </span>
+                </div>
+                <input
+                  type="text"
+                  value={caste}
+                  onChange={(e) => setCaste(e.target.value)}
+                  placeholder="e.g. Govigama, Karava, Salagama, or leave blank"
+                  className="w-full py-3 px-3.5 bg-[#f8f7f2] border border-[#5A5A40]/30 rounded-xl text-xs sm:text-sm font-semibold text-[#2A2A2A] placeholder:text-[#5A5A40]/40 focus:outline-none focus:border-[#5A5A40] focus:ring-2 focus:ring-[#5A5A40]/20"
+                />
+                <p className="text-[11px] text-[#5A5A40]/70">
+                  Optional community or lineage background (can be left blank).
+                </p>
+              </div>
+
+              {/* SECTION 3: SRI LANKAN HOROSCOPE (Optional) */}
+              <div className="pt-4 border-t border-[#5A5A40]/15 space-y-3.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <Sun className="w-4 h-4 text-amber-600" />
+                    <span className="text-xs font-bold text-[#2A2A2A] uppercase tracking-wider">
+                      Sri Lankan Horoscope / Kendraya
+                    </span>
+                  </div>
+                  <span className="text-[10px] font-bold text-stone-600 bg-stone-100 border border-stone-200 px-2 py-0.5 rounded-full">
+                    Optional
+                  </span>
+                </div>
+                <p className="text-[11px] text-[#5A5A40]/80 leading-snug">
+                  Sri Lankan Kendraya (කේන්ද්‍රය) matching helps calculate astrological compatibility (Porondam / Porondama Gelapima). You can fill these or skip.
+                </p>
+
+                {/* Manglik / Kuja Dosha Status */}
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-bold text-[#5A5A40] uppercase tracking-wider flex items-center gap-1">
+                    <Flame className="w-3.5 h-3.5 text-amber-600" />
+                    <span>Manglik / Kuja Dosha Status</span>
+                  </label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {[
+                      { value: 'Non-Manglik', label: 'Non-Manglik', sub: 'No Kuja Dosha' },
+                      { value: 'Manglik', label: 'Manglik', sub: 'Kuja Dosha' },
+                      { value: "Don't Know", label: "Don't Know", sub: 'Unspecified' },
+                    ].map((item) => (
+                      <button
+                        key={item.value}
+                        type="button"
+                        onClick={() => {
+                          setManglikStatus(manglikStatus === item.value ? '' : item.value);
+                        }}
+                        className={`py-2 px-2 rounded-xl border text-xs font-bold transition-all text-center flex flex-col items-center justify-center ${
+                          manglikStatus === item.value
+                            ? 'bg-[#5A5A40] text-white border-[#5A5A40] shadow-xs'
+                            : 'bg-[#f8f7f2] text-[#2A2A2A] border-[#5A5A40]/25 hover:border-[#5A5A40]'
+                        }`}
+                      >
+                        <span>{item.label}</span>
+                        <span className={`text-[9px] font-normal ${manglikStatus === item.value ? 'text-white/80' : 'text-[#5A5A40]/70'}`}>
+                          {item.sub}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Lagna (Ascendant Sign) */}
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-bold text-[#5A5A40] uppercase tracking-wider flex items-center gap-1">
+                    <Moon className="w-3.5 h-3.5 text-indigo-600" />
+                    <span>Lagna (Ascendant / ලග්නය)</span>
+                  </label>
+                  <select
+                    value={lagna}
+                    onChange={(e) => setLagna(e.target.value)}
+                    className="w-full p-3 bg-[#f8f7f2] border border-[#5A5A40]/30 rounded-xl text-xs font-semibold text-[#2A2A2A] focus:outline-none focus:border-[#5A5A40] cursor-pointer"
+                  >
+                    <option value="">Select Lagna (Optional)</option>
+                    {SRI_LANKAN_LAGNA_SIGNS.map((sign) => (
+                      <option key={sign.value} value={sign.value}>
+                        {sign.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Nekatha (Birth Star / Nakshatra) */}
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-bold text-[#5A5A40] uppercase tracking-wider flex items-center gap-1">
+                    <Sparkles className="w-3.5 h-3.5 text-amber-600" />
+                    <span>Nekatha (Birth Star / 27 Sri Lankan Nakshathras)</span>
+                  </label>
+                  <select
+                    value={nekatha}
+                    onChange={(e) => setNekatha(e.target.value)}
+                    className="w-full p-3 bg-[#f8f7f2] border border-[#5A5A40]/30 rounded-xl text-xs font-semibold text-[#2A2A2A] focus:outline-none focus:border-[#5A5A40] cursor-pointer"
+                  >
+                    <option value="">Select Nekatha (Optional)</option>
+                    {SRI_LANKAN_NEKATH.map((nek) => (
+                      <option key={nek} value={nek}>
+                        {nek}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Horoscope Notes / Kendraya Text with Sri Lankan Astrological Validation */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[11px] font-bold text-[#5A5A40] uppercase tracking-wider block">
+                      Horoscope Details / Kendraya Notes
+                    </label>
+                    <span className="text-[10px] text-[#5A5A40]/70">
+                      Validated per Sri Lankan tradition
+                    </span>
+                  </div>
+
+                  <textarea
+                    rows={3}
+                    value={horoscopeNotes}
+                    onChange={(e) => {
+                      const text = e.target.value;
+                      setHoroscopeNotes(text);
+                      if (horoscopeTextError) setHoroscopeTextError(null);
+                    }}
+                    onBlur={() => {
+                      if (horoscopeNotes.trim()) {
+                        const res = validateSriLankanHoroscopeText(horoscopeNotes);
+                        if (!res.isValid) {
+                          setHoroscopeTextError(res.message || 'Please enter valid Sri Lankan horoscope details or leave blank.');
+                        } else {
+                          setHoroscopeTextError(null);
+                        }
+                      } else {
+                        setHoroscopeTextError(null);
+                      }
+                    }}
+                    placeholder="e.g. Kuja in 7, Shani in 8, Ravi in 1st house, Kataka Lagna, Rehena Nekatha, Porondam 18/20..."
+                    className="w-full p-3 bg-[#f8f7f2] border border-[#5A5A40]/30 rounded-xl text-xs font-semibold text-[#2A2A2A] placeholder:text-[#5A5A40]/40 focus:outline-none focus:border-[#5A5A40] focus:ring-2 focus:ring-[#5A5A40]/20 resize-none"
+                  />
+
+                  {/* Validation State Indicator */}
+                  {horoscopeNotes.trim() && !horoscopeTextError && validateSriLankanHoroscopeText(horoscopeNotes).isValid && (
+                    <div className="text-[11px] text-emerald-700 font-bold flex items-center gap-1 pt-0.5">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                      <span>Valid Sri Lankan horoscope/Kendraya notation ✓</span>
+                    </div>
+                  )}
+
+                  {horoscopeTextError && (
+                    <div className="p-2.5 bg-rose-50 border border-rose-200 text-rose-800 rounded-xl text-xs flex items-center gap-2 animate-fadeIn">
+                      <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                      <span>{horoscopeTextError}</span>
+                    </div>
+                  )}
+
+                  {/* Quick Format Suggestion Chips */}
+                  <div className="pt-1 space-y-1">
+                    <span className="text-[10px] font-bold text-[#5A5A40]/80 uppercase tracking-wider block">
+                      Quick Astrological Tags:
+                    </span>
+                    <div className="flex flex-wrap gap-1.5">
+                      {[
+                        'Kuja in 7 (Manglik)',
+                        'Non-Manglik',
+                        'Shani in 8',
+                        'Guru in 1st house',
+                        'Kataka Lagna',
+                        'Porondam Matching Ready',
+                      ].map((tag) => (
+                        <button
+                          key={tag}
+                          type="button"
+                          onClick={() => {
+                            setHoroscopeNotes((prev) => {
+                              const trimmed = prev.trim();
+                              if (!trimmed) return tag;
+                              if (trimmed.includes(tag)) return trimmed;
+                              return `${trimmed}, ${tag}`;
+                            });
+                            setHoroscopeTextError(null);
+                          }}
+                          className="px-2.5 py-1 bg-[#5A5A40]/8 hover:bg-[#5A5A40]/15 text-[#5A5A40] rounded-full text-[10px] font-semibold border border-[#5A5A40]/20 transition-all active:scale-95"
+                        >
+                          + {tag}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* General Faith & Heritage Error */}
+              {faithHeritageError && (
+                <div className="p-2.5 bg-rose-50 border border-rose-200 text-rose-800 rounded-xl text-xs flex items-center justify-center gap-2 animate-fadeIn">
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                  <span>{faithHeritageError}</span>
+                </div>
+              )}
+            </div>
+
+            <p className="text-xs text-[#5A5A40]/80 font-medium text-center">
+              Religion and Ethnicity are required for matrimonial matching. Horoscope fields are optional.
+            </p>
+          </div>
+        )}
+
+        {/* SLIDE 9: Add Your Pictures (1 Main + 2 Additional, mandatory) */}
+        {currentStep === 9 && (
           <div className="space-y-5 animate-fadeIn">
             <div className="text-center space-y-2">
               <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-[#5A5A40]/10 text-[#5A5A40] mb-1">
@@ -2555,8 +3367,8 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete, 
           </div>
         )}
 
-        {/* SLIDE 9: Share something about yourself */}
-        {currentStep === 9 && (
+        {/* SLIDE 10: Share something about yourself */}
+        {currentStep === 10 && (
           <div className="space-y-5 animate-fadeIn w-full max-w-md">
             <div className="text-center space-y-2">
               <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-[#5A5A40]/10 text-[#5A5A40] mb-1">
@@ -2592,8 +3404,8 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete, 
           </div>
         )}
 
-        {/* SLIDE 10: What are your interests? */}
-        {currentStep === 10 && (
+        {/* SLIDE 11: What are your interests? */}
+        {currentStep === 11 && (
           <div className="space-y-5 animate-fadeIn w-full max-w-lg">
             <div className="text-center space-y-2">
               <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-[#5A5A40]/10 text-[#5A5A40] mb-1">
@@ -2703,8 +3515,8 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete, 
           </div>
         )}
 
-        {/* SLIDE 11: Show your personality off! */}
-        {currentStep === 11 && (
+        {/* SLIDE 12: Show your personality off! */}
+        {currentStep === 12 && (
           <div className="space-y-5 animate-fadeIn w-full max-w-md">
             <div className="text-center space-y-2">
               <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-[#5A5A40]/10 text-[#5A5A40] mb-1">
@@ -2767,8 +3579,8 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete, 
           </div>
         )}
 
-        {/* SLIDE 12: What's your email address? */}
-        {currentStep === 12 && (
+        {/* SLIDE 13: What's your email address? */}
+        {currentStep === 13 && (
           <div className="space-y-5 animate-fadeIn w-full max-w-md">
             <div className="text-center space-y-2">
               <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-[#5A5A40]/10 text-[#5A5A40] mb-1">
@@ -2784,18 +3596,50 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete, 
 
             <div className="space-y-4 pt-1">
               {/* Email Address Field */}
-              <div className="space-y-1">
-                <label className="text-xs font-bold text-[#2A2A2A] block">Email Address</label>
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-[#2A2A2A] block">Email Address</label>
+                  <span className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">
+                    Required
+                  </span>
+                </div>
                 <div className="relative">
                   <Mail className="w-4 h-4 text-[#5A5A40] absolute left-3.5 top-1/2 -translate-y-1/2" />
                   <input
                     type="email"
                     value={emailAddress}
-                    onChange={(e) => setEmailAddress(e.target.value)}
+                    onChange={(e) => {
+                      setEmailAddress(e.target.value);
+                      if (contactError) setContactError(null);
+                    }}
                     placeholder="name@example.com"
-                    className="w-full pl-10 pr-3.5 py-3 rounded-xl border border-[#5A5A40]/30 focus:border-[#5A5A40] focus:ring-2 focus:ring-[#5A5A40]/20 text-xs sm:text-sm text-[#2A2A2A] bg-white shadow-xs outline-none transition-all font-medium"
+                    className={`w-full pl-10 pr-3.5 py-3 rounded-xl border text-xs sm:text-sm text-[#2A2A2A] bg-white shadow-xs outline-none transition-all font-medium ${
+                      emailAddress.trim()
+                        ? isValidEmailAddress(emailAddress)
+                          ? 'border-emerald-500 focus:border-emerald-600 focus:ring-2 focus:ring-emerald-500/20'
+                          : 'border-rose-400 focus:border-rose-500 focus:ring-2 focus:ring-rose-400/20'
+                        : 'border-[#5A5A40]/30 focus:border-[#5A5A40] focus:ring-2 focus:ring-[#5A5A40]/20'
+                    }`}
                   />
                 </div>
+
+                {/* Email Real-time Validation Indicator */}
+                {emailAddress.trim() && (
+                  <div className="flex items-center gap-1.5 text-[11px] pt-0.5 animate-fadeIn">
+                    {isValidEmailAddress(emailAddress) ? (
+                      <>
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                        <span className="text-emerald-700 font-semibold">Valid email address</span>
+                      </>
+                    ) : (
+                      <>
+                        <AlertCircle className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+                        <span className="text-rose-600 font-medium">Please enter a complete email address (e.g. name@domain.com)</span>
+                      </>
+                    )}
+                  </div>
+                )}
+
                 <p className="text-[11px] text-[#5A5A40]/90 font-medium flex items-center gap-1 pt-0.5">
                   <Lock className="w-3 h-3 text-[#5A5A40] shrink-0" />
                   Your email will not be shown to other profiles
@@ -2803,34 +3647,50 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete, 
               </div>
 
               {/* Phone Number Field */}
-              <div className="space-y-1 pt-1">
-                <label className="text-xs font-bold text-[#2A2A2A] block">Phone Number</label>
+              <div className="space-y-1.5 pt-1">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-[#2A2A2A] block">Phone Number</label>
+                  <span className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">
+                    Required
+                  </span>
+                </div>
                 <div className="flex items-center gap-2">
                   <div className="relative">
                     <button
                       type="button"
-                      onClick={() => setShowCountryPicker(true)}
-                      className="px-3 py-3 rounded-xl border border-[#5A5A40]/30 bg-[#5A5A40]/5 text-xs font-bold text-[#2A2A2A] flex items-center gap-1.5 shrink-0 shadow-xs"
+                      onClick={() => setShowCountryPicker(!showCountryPicker)}
+                      className="px-3 py-3 rounded-xl border border-[#5A5A40]/30 bg-[#5A5A40]/5 hover:bg-[#5A5A40]/10 text-xs font-bold text-[#2A2A2A] flex items-center gap-1.5 shrink-0 shadow-xs transition-colors cursor-pointer"
+                      title="Select Country Calling Code"
                     >
-                      <CountryFlag countryCode={detectedPhoneInfo.countryCode || 'US'} svg style={{ width: '1.25rem', height: '1.25rem' }} />
+                      <CountryFlag countryCode={detectedPhoneInfo.countryCode || 'LK'} svg style={{ width: '1.25rem', height: '1.25rem' }} />
                       <span>{detectedPhoneInfo.code}</span>
+                      <ChevronDown className="w-3.5 h-3.5 text-[#5A5A40]" />
                     </button>
                     {showCountryPicker && (
-                      <div className="absolute z-[60] w-40 bg-white border border-[#5A5A40]/30 rounded-xl shadow-lg mt-1 left-0 right-0 mx-auto">
-                        <div className="p-2 text-xs font-bold text-[#2A2A2A] border-b border-[#5A5A40]/10">Country Code</div>
-                        <div className="max-h-60 overflow-y-auto">
-                          {countries.map((country) => (
+                      <div className="absolute z-[60] w-56 bg-white border border-[#5A5A40]/30 rounded-xl shadow-xl mt-1 left-0 max-h-64 overflow-y-auto animate-fadeIn">
+                        <div className="p-2.5 text-xs font-bold text-[#2A2A2A] border-b border-[#5A5A40]/10 flex items-center justify-between bg-stone-50">
+                          <span>Select Country</span>
+                          <span className="text-[10px] text-[#5A5A40]">Auto-detected</span>
+                        </div>
+                        <div>
+                          {COUNTRIES_LIST.map((c) => (
                             <button
-                              key={country.code}
+                              key={`${c.countryCode}-${c.code}`}
                               type="button"
                               onClick={() => {
-                                setDetectedPhoneInfo({ code: country.code, flag: country.flag, countryCode: country.countryCode });
+                                setDetectedPhoneInfo({ code: c.code, flag: c.flag, countryCode: c.countryCode });
                                 setShowCountryPicker(false);
+                                if (contactError) setContactError(null);
                               }}
-                              className="flex items-center gap-2 px-3 py-2 text-left hover:bg-[#5A5A40]/5 transition-colors"
+                              className={`w-full flex items-center justify-between px-3 py-2 text-left hover:bg-[#5A5A40]/10 transition-colors text-xs ${
+                                detectedPhoneInfo.countryCode === c.countryCode ? 'bg-[#5A5A40]/10 font-bold' : ''
+                              }`}
                             >
-                              <CountryFlag countryCode={country.countryCode || 'US'} svg style={{ width: '1.25rem', height: '1.25rem' }} />
-                              <span>{country.code}</span>
+                              <div className="flex items-center gap-2 min-w-0">
+                                <CountryFlag countryCode={c.countryCode} svg style={{ width: '1.15rem', height: '1.15rem' }} />
+                                <span className="truncate text-[#2A2A2A]">{c.name}</span>
+                              </div>
+                              <span className="text-[#5A5A40] text-[11px] font-semibold ml-2">{c.code}</span>
                             </button>
                           ))}
                         </div>
@@ -2842,21 +3702,44 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete, 
                     <input
                       type="tel"
                       value={phoneNumber}
-                      onChange={(e) => {
-                        setPhoneNumber(e.target.value.replace(/[^0-9]/g, ''));
-                      }}
-                      onFocus={() => {
-                        console.log('Input field focused');
-                        setShowCountryPicker(false);
-                      }}
-                      placeholder="Enter phone number"
-                      className="w-full pl-10 pr-3.5 py-3 rounded-xl border border-[#5A5A40]/30 focus:border-[#5A5A40] focus:ring-2 focus:ring-[#5A5A40]/20 text-xs sm:text-sm text-[#2A2A2A] bg-white shadow-xs outline-none transition-all font-medium"
+                      onChange={(e) => handlePhoneInputChange(e.target.value)}
+                      onFocus={() => setShowCountryPicker(false)}
+                      placeholder="e.g. 77 123 4567 or paste full number"
+                      className={`w-full pl-10 pr-3.5 py-3 rounded-xl border text-xs sm:text-sm text-[#2A2A2A] bg-white shadow-xs outline-none transition-all font-medium ${
+                        phoneNumber.trim()
+                          ? phoneValidationStatus.isValid
+                            ? 'border-emerald-500 focus:border-emerald-600 focus:ring-2 focus:ring-emerald-500/20'
+                            : 'border-amber-400 focus:border-amber-500 focus:ring-2 focus:ring-amber-400/20'
+                          : 'border-[#5A5A40]/30 focus:border-[#5A5A40] focus:ring-2 focus:ring-[#5A5A40]/20'
+                      }`}
                     />
                   </div>
                 </div>
+
+                {/* Phone Number Real-time Validation Indicator */}
+                {phoneNumber.trim() && (
+                  <div className="flex items-center gap-1.5 text-[11px] pt-0.5 animate-fadeIn">
+                    {phoneValidationStatus.isValid ? (
+                      <>
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                        <span className="text-emerald-700 font-semibold">
+                          Valid: {phoneValidationStatus.formatted}
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                        <span className="text-amber-700 font-medium">
+                          {phoneValidationStatus.message}
+                        </span>
+                      </>
+                    )}
+                  </div>
+                )}
+
                 <p className="text-[11px] text-[#5A5A40]/90 font-medium flex items-center gap-1 pt-0.5">
                   <Lock className="w-3 h-3 text-[#5A5A40] shrink-0" />
-                  Your phone number will not be shown to other profiles
+                  Your phone number is confidential and kept secure
                 </p>
               </div>
 
@@ -2866,20 +3749,12 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete, 
                   <span>{contactError}</span>
                 </div>
               )}
-
-              {/* Phone Number Validation */}
-              {phoneNumber && (
-                <div className="flex items-center gap-2 text-[10px] text-[#5A5A40]/90">
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
-                  <span>Valid {isValidPhoneNumber(phoneNumber) ? 'phone number' : 'invalid format'}</span>
-                </div>
-              )}
             </div>
           </div>
         )}
 
-        {/* SLIDE 13: Complete profile verification */}
-        {currentStep === 13 && (
+        {/* SLIDE 14: Complete profile verification */}
+        {currentStep === 14 && (
           <div className="space-y-5 animate-fadeIn w-full max-w-md">
             <div className="text-center space-y-2">
               <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-[#5A5A40]/10 text-[#5A5A40] mb-1">
@@ -2974,8 +3849,8 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete, 
           </div>
         )}
 
-        {/* SLIDE 14: Profile Preview */}
-        {currentStep === 14 && (
+        {/* SLIDE 15: Profile Preview */}
+        {currentStep === 15 && (
           <div className="space-y-4 animate-fadeIn w-full max-w-md">
             <div className="text-center space-y-1">
               <div className="inline-flex items-center justify-center w-10 h-10 rounded-2xl bg-[#5A5A40]/10 text-[#5A5A40]">
@@ -3194,6 +4069,61 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete, 
                         </div>
                       </>
                     )}
+
+                    {(religion || ethnicity || caste) && (
+                      <>
+                        <div className="h-px bg-[#5A5A40]/12 mx-1" />
+                        <div className="py-3 flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2.5 text-[#2A2A2A]/90">
+                            <Sparkles className="w-4 h-4 text-[#8a804a] shrink-0" />
+                            <span>Faith &amp; Heritage</span>
+                          </div>
+                          <span className="border border-[#5A5A40]/35 rounded-full px-3 py-1 bg-[#5A5A40]/5 text-[11px] font-medium text-[#2A2A2A]">
+                            {[
+                              religion === 'Other' ? customReligion : religion,
+                              ethnicity === 'Other' ? customEthnicity : ethnicity,
+                              caste ? `Caste: ${caste}` : null
+                            ].filter(Boolean).join(' • ')}
+                          </span>
+                        </div>
+                      </>
+                    )}
+
+                    {(manglikStatus || lagna || nekatha || horoscopeNotes) && (
+                      <>
+                        <div className="h-px bg-[#5A5A40]/12 mx-1" />
+                        <div className="py-3 flex items-start justify-between gap-2">
+                          <div className="flex items-center gap-2.5 text-[#2A2A2A]/90 pt-0.5">
+                            <Sun className="w-4 h-4 text-amber-600 shrink-0" />
+                            <span>Horoscope / Kendraya</span>
+                          </div>
+                          <div className="text-right space-y-1">
+                            <div className="flex flex-wrap justify-end gap-1">
+                              {manglikStatus && (
+                                <span className="border border-[#5A5A40]/35 rounded-full px-2.5 py-0.5 bg-[#5A5A40]/5 text-[10px] font-bold text-[#2A2A2A]">
+                                  {manglikStatus}
+                                </span>
+                              )}
+                              {lagna && (
+                                <span className="border border-[#5A5A40]/35 rounded-full px-2.5 py-0.5 bg-[#5A5A40]/5 text-[10px] font-bold text-[#2A2A2A]">
+                                  {lagna} Lagna
+                                </span>
+                              )}
+                              {nekatha && (
+                                <span className="border border-[#5A5A40]/35 rounded-full px-2.5 py-0.5 bg-[#5A5A40]/5 text-[10px] font-bold text-[#2A2A2A]">
+                                  {nekatha.split(' ')[0]} Nekatha
+                                </span>
+                              )}
+                            </div>
+                            {horoscopeNotes && (
+                              <p className="text-[10px] text-[#5A5A40] italic max-w-[200px] truncate">
+                                "{horoscopeNotes}"
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      </>
+                    )}
                   </div>
                 </div>
 
@@ -3236,12 +4166,14 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete, 
 
       {/* Verification Flow Modal Overlay */}
       {isVerificationModalOpen && (
-        <div className="fixed inset-0 bg-black/70 backdrop-blur-xs z-50 flex items-center justify-center p-4 animate-fadeIn">
-          <div className="bg-white rounded-3xl max-w-sm w-full p-5 space-y-4 relative shadow-2xl border border-[#5A5A40]/20 max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-xs z-50 flex items-center justify-center p-3 sm:p-4 animate-fadeIn">
+          <div className={`bg-white rounded-3xl w-full p-5 sm:p-6 space-y-4 relative shadow-2xl border border-[#5A5A40]/20 max-h-[92vh] overflow-y-auto transition-all ${
+            verificationStep === 'selfie_scan' ? 'max-w-xl sm:max-w-2xl' : 'max-w-md'
+          }`}>
             <button
               type="button"
-              onClick={() => setIsVerificationModalOpen(false)}
-              className="absolute top-3.5 right-3.5 p-1.5 rounded-full hover:bg-slate-100 text-slate-500 transition-colors"
+              onClick={handleCloseVerificationModal}
+              className="absolute top-3.5 right-3.5 p-1.5 rounded-full hover:bg-slate-100 text-slate-500 transition-colors z-20 cursor-pointer"
             >
               <X className="w-5 h-5" />
             </button>
@@ -3254,21 +4186,21 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete, 
                 </div>
                 <div className="space-y-1.5">
                   <h3 className="text-lg font-bold font-serif text-[#2A2A2A]">
-                    Why Complete Verification?
+                    Biometric Face Verification
                   </h3>
                   <p className="text-xs text-[#5A5A40] leading-relaxed">
-                    Vivah ensures a 100% genuine community. Verified profiles get 3x more responses and the Gold Verified Badge.
+                    Vivah ensures a 100% genuine community. We compare your live front-camera face with your uploaded profile picture using AI.
                   </p>
                 </div>
 
                 <div className="bg-[#5A5A40]/5 p-3 rounded-2xl text-left space-y-2 text-xs text-[#2A2A2A]">
                   <div className="flex items-start gap-2">
                     <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-                    <span><strong>Real People Only:</strong> Confirms you match your profile photos.</span>
+                    <span><strong>Front Camera Only:</strong> Accesses solely your front selfie camera.</span>
                   </div>
                   <div className="flex items-start gap-2">
                     <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-                    <span><strong>Privacy First:</strong> Scan data is processed securely and deleted.</span>
+                    <span><strong>AI Biometric Match:</strong> Verifies you match your uploaded profile photo.</span>
                   </div>
                 </div>
 
@@ -3276,110 +4208,262 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete, 
                   type="button"
                   onClick={() => {
                     setVerificationStep('selfie_scan');
-                    setScanProgress(0);
-                    setIsScanning(false);
-                    setFaceAligned(false);
+                    startFrontCamera();
                   }}
-                  className="w-full py-3.5 px-4 rounded-xl font-bold text-xs bg-[#5A5A40] text-white hover:bg-[#4a4a34] transition-all shadow-md active:scale-95 flex items-center justify-center gap-2"
+                  className="w-full py-3.5 px-4 rounded-xl font-bold text-xs bg-[#5A5A40] text-white hover:bg-[#4a4a34] transition-all shadow-md active:scale-95 flex items-center justify-center gap-2 cursor-pointer"
                 >
                   <ScanFace className="w-4 h-4" />
-                  <span>Begin 3D Selfie Scan</span>
+                  <span>Open Front Camera &amp; Verify Face</span>
                 </button>
               </div>
             )}
 
-            {/* Verification Step 2: Selfie Camera Oval Scan */}
+            {/* Verification Step 2: Side-by-Side Front Camera & Uploaded Photo Face Verification */}
             {verificationStep === 'selfie_scan' && (
-              <div className="text-center space-y-4 pt-1">
-                <div className="space-y-1">
-                  <h3 className="text-base font-bold text-[#2A2A2A]">
-                    Align Face in Oval Frame
+              <div className="space-y-4 pt-1">
+                <div className="text-center space-y-1">
+                  <div className="inline-flex items-center gap-1.5 px-3 py-0.5 rounded-full bg-[#5A5A40]/10 text-[#5A5A40] text-[11px] font-bold">
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>AI Identity Matching</span>
+                  </div>
+                  <h3 className="text-lg sm:text-xl font-bold font-serif text-[#2A2A2A]">
+                    Front-Camera Face Verification
                   </h3>
-                  <p className="text-xs text-[#5A5A40]">
-                    Hold device at eye level and fit your face inside the outline.
+                  <p className="text-xs text-[#5A5A40] max-w-md mx-auto">
+                    We compare your live front-camera selfie alongside your uploaded profile photo to verify that you are genuine.
                   </p>
                 </div>
 
-                {/* Oval Camera Scanner Viewport */}
-                <div className="relative w-52 h-64 mx-auto rounded-3xl overflow-hidden bg-slate-900 flex items-center justify-center border-2 border-slate-700 shadow-inner">
-                  {/* Camera simulated background */}
-                  <img
-                    src={mainPhoto || 'https://via.placeholder.com/600x600?text=Profile+Image'}
-                    alt="Camera feed"
-                    className="w-full h-full object-cover filter brightness-90"
-                  />
-                  <div className="absolute inset-0 bg-black/30" />
-
-                  {/* Oval Frame Guide */}
-                  <div className={`w-36 h-48 rounded-[50%] border-4 transition-all duration-500 flex flex-col items-center justify-center relative ${
-                    faceAligned
-                      ? 'border-emerald-400 bg-emerald-500/10 shadow-[0_0_25px_rgba(52,211,153,0.6)]'
-                      : 'border-white/80 border-dashed animate-pulse'
-                  }`}>
-                    {/* Corner Reticles */}
-                    <div className="text-white text-[10px] font-bold uppercase tracking-wider bg-black/60 px-2 py-0.5 rounded-full">
-                      {faceAligned ? 'Aligned ✓' : 'Fit Face Here'}
+                {/* Side-by-Side Image Comparison View */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 pt-1">
+                  {/* LEFT COLUMN: Uploaded Profile Photo */}
+                  <div className="flex flex-col space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-[#2A2A2A] flex items-center gap-1">
+                        <ImageIcon className="w-3.5 h-3.5 text-[#5A5A40]" />
+                        <span>Uploaded Photo</span>
+                      </span>
+                      <span className="text-[10px] font-bold text-[#5A5A40] bg-[#5A5A40]/10 px-2 py-0.5 rounded-full">
+                        Reference
+                      </span>
                     </div>
 
-                    {/* Scanning Beam */}
-                    {isScanning && (
-                      <div className="absolute inset-x-0 h-1 bg-emerald-400 shadow-[0_0_12px_#34d399] animate-bounce top-1/2" />
-                    )}
+                    <div className="relative aspect-square w-full rounded-2xl overflow-hidden bg-stone-100 border-2 border-[#5A5A40]/30 shadow-xs flex items-center justify-center">
+                      <img
+                        src={mainPhoto || photo2 || photo3 || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=500&auto=format&fit=crop&q=80'}
+                        alt="Uploaded reference profile photo"
+                        className="w-full h-full object-cover"
+                      />
+                      <div className="absolute bottom-2 left-2 right-2 bg-black/60 backdrop-blur-xs px-2.5 py-1 rounded-lg text-white text-[10px] font-medium text-center truncate">
+                        {firstName ? `${toPascalCase(firstName)}'s Profile Photo` : 'Profile Photo'}
+                      </div>
+                    </div>
                   </div>
 
-                  {/* Progress overlay */}
-                  {isScanning && (
-                    <div className="absolute bottom-2 inset-x-3 bg-black/70 backdrop-blur-xs p-2 rounded-xl text-white text-[11px] font-bold flex items-center justify-between">
-                      <span>Scanning...</span>
-                      <span>{scanProgress}%</span>
+                  {/* RIGHT COLUMN: Live Front Camera / Captured Selfie */}
+                  <div className="flex flex-col space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-[#2A2A2A] flex items-center gap-1">
+                        <Camera className="w-3.5 h-3.5 text-emerald-600" />
+                        <span>Live Front Camera</span>
+                      </span>
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                        selfieVerified
+                          ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                          : capturedSelfie
+                          ? 'bg-amber-100 text-amber-800'
+                          : 'bg-emerald-50 text-emerald-700'
+                      }`}>
+                        {selfieVerified ? 'Approved ✓' : capturedSelfie ? 'Captured' : 'Front View'}
+                      </span>
+                    </div>
+
+                    <div className="relative aspect-square w-full rounded-2xl overflow-hidden bg-slate-900 border-2 border-[#5A5A40]/30 shadow-xs flex items-center justify-center">
+                      {capturedSelfie ? (
+                        <img
+                          src={capturedSelfie}
+                          alt="Captured front selfie"
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <>
+                          <video
+                            ref={videoRef}
+                            autoPlay
+                            playsInline
+                            muted
+                            className="w-full h-full object-cover transform -scale-x-100"
+                          />
+
+                          {/* Oval Frame Guide */}
+                          <div className="absolute inset-0 flex items-center justify-center pointer-events-none p-4">
+                            <div className="w-36 h-48 sm:w-44 sm:h-56 rounded-[50%] border-2 border-dashed border-emerald-400 shadow-[0_0_20px_rgba(52,211,153,0.35)] flex flex-col items-center justify-center">
+                              <span className="text-[10px] font-bold text-white bg-black/70 backdrop-blur-xs px-2 py-0.5 rounded-full uppercase tracking-wider">
+                                Fit Face Here
+                              </span>
+                            </div>
+                          </div>
+                        </>
+                      )}
+
+                      {/* Camera Loading or Error Overlay */}
+                      {cameraStatus === 'starting' && (
+                        <div className="absolute inset-0 bg-slate-900/90 flex flex-col items-center justify-center text-white space-y-2 p-3 text-center">
+                          <Loader2 className="w-7 h-7 text-emerald-400 animate-spin" />
+                          <p className="text-xs font-semibold">Accessing front camera...</p>
+                        </div>
+                      )}
+
+                      {cameraStatus === 'denied' && (
+                        <div className="absolute inset-0 bg-slate-900/95 flex flex-col items-center justify-center text-white space-y-2.5 p-4 text-center z-10">
+                          <AlertCircle className="w-8 h-8 text-amber-400" />
+                          <p className="text-xs font-bold text-white">Front Camera Access</p>
+                          <p className="text-[11px] text-white/80 leading-snug max-w-xs">
+                            {cameraError || 'Camera permissions may be blocked in your browser preview.'}
+                          </p>
+                          <div className="flex flex-col w-full max-w-[210px] gap-2 pt-1">
+                            <button
+                              type="button"
+                              onClick={startFrontCamera}
+                              className="w-full px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer"
+                            >
+                              Retry Front Camera
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => selfieFileInputRef.current?.click()}
+                              className="w-full px-3 py-2 bg-white/20 hover:bg-white/30 text-white rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                            >
+                              <Camera className="w-3.5 h-3.5" />
+                              <span>Take / Select Selfie</span>
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Hidden Native Camera & File Input */}
+                      <input
+                        type="file"
+                        ref={selfieFileInputRef}
+                        accept="image/*"
+                        capture="user"
+                        onChange={handleSelfieFileSelect}
+                        className="hidden"
+                      />
+
+                      {/* AI Verification Loading Overlay */}
+                      {isVerifyingFace && (
+                        <div className="absolute inset-0 bg-black/80 backdrop-blur-xs flex flex-col items-center justify-center text-white p-4 space-y-3 text-center animate-fadeIn z-20">
+                          <Loader2 className="w-8 h-8 text-emerald-400 animate-spin" />
+                          <div className="space-y-1">
+                            <p className="text-xs font-bold text-white">AI Biometric Analysis...</p>
+                            <p className="text-[11px] text-white/80 leading-relaxed">
+                              Gemini AI is comparing facial landmarks to verify genuine authenticity.
+                            </p>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* AI Verification Result Feedback */}
+                {aiVerificationResult && (
+                  <div className={`p-3.5 rounded-2xl border text-xs animate-fadeIn ${
+                    aiVerificationResult.approved
+                      ? 'bg-emerald-50 border-emerald-300 text-emerald-950'
+                      : 'bg-rose-50 border-rose-300 text-rose-950'
+                  }`}>
+                    <div className="flex items-start gap-2.5">
+                      {aiVerificationResult.approved ? (
+                        <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+                      ) : (
+                        <AlertCircle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+                      )}
+                      <div className="flex-1 space-y-0.5">
+                        <div className="flex items-center justify-between">
+                          <span className="font-bold text-xs">
+                            {aiVerificationResult.approved ? 'Identity Match Confirmed ✓' : 'Verification Not Approved'}
+                          </span>
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                            aiVerificationResult.approved ? 'bg-emerald-200 text-emerald-900' : 'bg-rose-200 text-rose-900'
+                          }`}>
+                            Score: {aiVerificationResult.confidenceScore}%
+                          </span>
+                        </div>
+                        <p className="text-[11px] leading-snug">
+                          {aiVerificationResult.reason}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {aiVerificationError && (
+                  <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-xl text-xs flex items-center justify-center gap-2 animate-fadeIn">
+                    <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                    <span>{aiVerificationError}</span>
+                  </div>
+                )}
+
+                {/* Action Buttons */}
+                <div className="pt-1 space-y-2">
+                  {!selfieVerified ? (
+                    <div className="flex flex-col sm:flex-row gap-2">
+                      {capturedSelfie && (
+                        <button
+                          type="button"
+                          onClick={handleRetakeFrontSelfie}
+                          disabled={isVerifyingFace}
+                          className="w-full sm:w-1/3 py-3 px-3 rounded-xl border border-[#5A5A40]/30 hover:bg-[#5A5A40]/10 text-[#2A2A2A] font-bold text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                        >
+                          <RotateCcw className="w-3.5 h-3.5" />
+                          <span>Retake</span>
+                        </button>
+                      )}
+
+                      {cameraStatus === 'active' ? (
+                        <button
+                          type="button"
+                          disabled={isVerifyingFace}
+                          onClick={handleCaptureAndVerifyFace}
+                          className="flex-1 py-3.5 px-4 rounded-xl font-bold text-xs bg-emerald-600 hover:bg-emerald-700 text-white transition-all shadow-md active:scale-95 flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
+                        >
+                          <ScanFace className="w-4 h-4" />
+                          <span>{isVerifyingFace ? 'Verifying with AI...' : 'Capture Face & Verify with AI'}</span>
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={isVerifyingFace}
+                          onClick={() => selfieFileInputRef.current?.click()}
+                          className="flex-1 py-3.5 px-4 rounded-xl font-bold text-xs bg-emerald-600 hover:bg-emerald-700 text-white transition-all shadow-md active:scale-95 flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
+                        >
+                          <Camera className="w-4 h-4" />
+                          <span>{isVerifyingFace ? 'Verifying with AI...' : 'Take / Upload Front Selfie'}</span>
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="space-y-2 animate-fadeIn">
+                      <button
+                        type="button"
+                        onClick={handleCloseVerificationModal}
+                        className="w-full py-3.5 px-4 rounded-xl font-bold text-xs bg-emerald-600 hover:bg-emerald-700 text-white transition-all shadow-md active:scale-95 flex items-center justify-center gap-2 cursor-pointer"
+                      >
+                        <CheckCircle2 className="w-4 h-4" />
+                        <span>Verified! Proceed with Profile</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setVerificationStep('id_upload')}
+                        className="w-full py-2.5 px-4 rounded-xl font-bold text-xs bg-[#5A5A40]/10 hover:bg-[#5A5A40]/20 text-[#5A5A40] transition-all flex items-center justify-center gap-1.5"
+                      >
+                        <span>Also upload government ID (Optional)</span>
+                      </button>
                     </div>
                   )}
                 </div>
-
-                {!selfieVerified ? (
-                  <button
-                    type="button"
-                    disabled={isScanning}
-                    onClick={() => {
-                      setIsScanning(true);
-                      setScanProgress(10);
-                      setTimeout(() => {
-                        setFaceAligned(true);
-                        let p = 10;
-                        const interval = setInterval(() => {
-                          p += 20;
-                          if (p >= 100) {
-                            p = 100;
-                            clearInterval(interval);
-                            setScanProgress(100);
-                            setIsScanning(false);
-                            setSelfieVerified(true);
-                          } else {
-                            setScanProgress(p);
-                          }
-                        }, 400);
-                      }, 800);
-                    }}
-                    className="w-full py-3.5 px-4 rounded-xl font-bold text-xs bg-emerald-600 hover:bg-emerald-700 text-white transition-all shadow-md active:scale-95 flex items-center justify-center gap-2 disabled:opacity-50"
-                  >
-                    <ScanFace className="w-4 h-4" />
-                    <span>{isScanning ? 'Scanning Face...' : 'Start Camera Scan'}</span>
-                  </button>
-                ) : (
-                  <div className="space-y-2 animate-fadeIn">
-                    <div className="p-3 bg-emerald-50 border border-emerald-300 text-emerald-900 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5">
-                      <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                      <span>Face Scan Verified Successfully!</span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setVerificationStep('id_upload')}
-                      className="w-full py-3 px-4 rounded-xl font-bold text-xs bg-[#5A5A40] text-white hover:bg-[#4a4a34] transition-all"
-                    >
-                      Continue to Issued ID (Optional)
-                    </button>
-                  </div>
-                )}
               </div>
             )}
 
