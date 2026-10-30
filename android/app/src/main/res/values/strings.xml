@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Vivah</string>
+    <string name="title_activity_main">Vivah</string>
+    <string name="package_name">lk.vivah.app</string>
+    <string name="custom_url_scheme">lk.vivah.app</string>
+</resources>

@@ -1,0 +1,31 @@
+@import "tailwindcss";
+
+@theme {
+  --font-serif: 'Playfair Display', Georgia, serif;
+  --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  --color-natural-dark: #2A2A2A;
+  --color-natural-olive: #5A5A40;
+  --color-natural-bg: #f5f5f0;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: #f5f5f0;
+  color: #2A2A2A;
+}
+
+/* Custom scrollbar styling for natural tones theme */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #eaeae0;
+}
+::-webkit-scrollbar-thumb {
+  background: #5A5A40/30;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #5A5A40/60;
+}

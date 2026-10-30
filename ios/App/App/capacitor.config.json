@@ -1,0 +1,11 @@
+{
+	"appId": "lk.vivah.app",
+	"appName": "Vivah",
+	"webDir": "dist",
+	"packageClassList": [
+		"CAPCameraPlugin",
+		"GeolocationPlugin",
+		"PreferencesPlugin",
+		"PushNotificationsPlugin"
+	]
+}

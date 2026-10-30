@@ -1,0 +1,8 @@
+{
+  "name": "Vivah Matrimony",
+  "description": "Modern Flutter-style matrimony application with profile matching, personalized filters, secure chat, AI compatibility insights, and Supabase integration.",
+  "requestFramePermissions": [
+    "geolocation"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
