@@ -3,12 +3,33 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { SupabaseConfig, CandidateProfile } from '../types';
 
 const STORAGE_KEY_CONFIG = 'vivah_supabase_config_v1';
+const STORAGE_KEY_USER_ID = 'vivah_current_user_id_v1';
 
 function safeGetItem(key: string): string | null {
   try { return localStorage.getItem(key); } catch { return null; }
 }
 function safeSetItem(key: string, value: string) {
   try { localStorage.setItem(key, value); } catch { /* ignore */ }
+}
+
+export function getPersistentUserId(): string {
+  try {
+    const saved = safeGetItem(STORAGE_KEY_USER_ID);
+    if (saved) return saved;
+    const newId = (typeof crypto !== 'undefined' && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : 'usr_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 9);
+    safeSetItem(STORAGE_KEY_USER_ID, newId);
+    return newId;
+  } catch {
+    return 'current-user-123';
+  }
+}
+
+export function setPersistentUserId(id: string) {
+  if (id) {
+    safeSetItem(STORAGE_KEY_USER_ID, id);
+  }
 }
 
 // Load initial config from localStorage or import.meta.env
@@ -153,9 +174,107 @@ export async function syncProfileToSupabase(profile: CandidateProfile, onboardin
         onboarding_step: onboardingData.onboarding_step,
         onboarding_completed_at: onboardingData.onboarding_completed_at,
       }),
-    });
+    }, { onConflict: 'id' });
   } catch (err) {
     console.warn('Supabase syncProfile error:', err);
+  }
+}
+
+export interface OnboardingSupabaseEntryPayload {
+  onboarding_step?: number;
+  onboarding_completed?: boolean;
+  onboarding_completed_at?: string | null;
+  name?: string;
+  gender?: string;
+  age?: number;
+  height?: string;
+  country?: string;
+  city?: string;
+  state?: string;
+  education?: string;
+  highest_degree?: string;
+  school_or_university?: string;
+  profession?: string;
+  marital_status?: string;
+  photos?: string[];
+  avatar_url?: string;
+  bio?: string;
+  [key: string]: any;
+}
+
+/**
+ * Writes or updates an entry into the 'profiles' table on the exact SAME line (matching id).
+ * Uses PostgreSQL upsert with onConflict: 'id' so no duplicate rows are created.
+ */
+export async function syncOnboardingEntryToSupabase(userId: string, data: OnboardingSupabaseEntryPayload) {
+  const supabase = getSupabaseClient();
+  if (!supabase || !userId) return;
+
+  try {
+    const payload: Record<string, any> = {
+      id: userId,
+      user_id: userId,
+      ...data
+    };
+
+    // Clean undefined keys
+    Object.keys(payload).forEach((k) => {
+      if (payload[k] === undefined) delete payload[k];
+    });
+
+    const { error } = await supabase
+      .from('profiles')
+      .upsert(payload, { onConflict: 'id' });
+
+    if (error) {
+      console.warn('Supabase syncOnboardingEntry upsert warning:', error.message);
+    }
+  } catch (err) {
+    console.warn('Supabase syncOnboardingEntry exception:', err);
+  }
+}
+
+/**
+ * Overwrites the exact SAME line in the 'profiles' table with reset values when starting over.
+ * Guarantees zero duplicate rows and preserves existing database size.
+ */
+export async function resetOnboardingProfileInSupabase(userId: string) {
+  const supabase = getSupabaseClient();
+  if (!supabase || !userId) return;
+
+  try {
+    const resetPayload = {
+      id: userId,
+      user_id: userId,
+      name: '',
+      gender: '',
+      age: 0,
+      height: '',
+      country: '',
+      city: '',
+      state: '',
+      education: '',
+      highest_degree: '',
+      school_or_university: '',
+      profession: '',
+      marital_status: '',
+      photos: [],
+      avatar_url: '',
+      bio: '',
+      onboarding_step: 0,
+      onboarding_completed: false,
+      onboarding_completed_at: null
+    };
+
+    const { error } = await supabase
+      .from('profiles')
+      .upsert(resetPayload, { onConflict: 'id' });
+
+    if (error) {
+      console.warn('Supabase resetOnboardingProfile upsert warning:', error.message);
+    }
+  } catch (err) {
+    console.warn('Supabase resetOnboardingProfile exception:', err);
   }
 }
 

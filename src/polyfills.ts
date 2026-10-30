@@ -1,14 +1,15 @@
 // src/polyfills.ts
 // Polyfill for increasing EventEmitter max listeners in browser environment
-if (typeof window !== 'undefined' && window.EventEmitter) {
+if (typeof window !== 'undefined' && (window as any).EventEmitter) {
   // For browser environments where EventEmitter is available
-  window.EventEmitter.prototype.setMaxListeners = function setMaxListeners(n: number) {
+  const win = window as any;
+  win.EventEmitter.prototype.setMaxListeners = function setMaxListeners(this: any, n: number) {
     this._maxListeners = n;
     return this;
   };
 
   // Set default max listeners for any new EventEmitters
-  window.EventEmitter.defaultMaxListeners = 20;
+  win.EventEmitter.defaultMaxListeners = 20;
 } else if (typeof process !== 'undefined' && process && process.emitWarning) {
   // For Node.js environments
   const EventEmitter = require('events');

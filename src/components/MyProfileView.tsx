@@ -11,20 +11,32 @@ interface MyProfileViewProps {
   credits?: number;
   maxCredits?: number;
   timeUntilReset?: string;
+  onContinueOnboarding?: () => void;
 }
 
-export const MyProfileView: React.FC<MyProfileViewProps> = ({ userProfile, setUserProfile, credits = 5, maxCredits = 5, timeUntilReset = '' }) => {
+export const MyProfileView: React.FC<MyProfileViewProps> = ({ userProfile, setUserProfile, credits = 5, maxCredits = 5, timeUntilReset = '', onContinueOnboarding }) => {
   const [subscriptionLoading] = useState(false);
 
   if (!userProfile) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center p-6 text-center">
-        <div className="bg-white border border-rose-200 rounded-3xl p-6 shadow-xl max-w-sm w-full space-y-4">
-          <div className="w-16 h-16 rounded-full bg-rose-100 flex items-center justify-center mx-auto">
-            <X className="w-8 h-8 text-rose-600" />
+        <div className="bg-white border border-[#5A5A40]/20 rounded-3xl p-6 shadow-xl max-w-sm w-full space-y-4">
+          <div className="w-16 h-16 rounded-full bg-[#5A5A40]/10 flex items-center justify-center mx-auto text-[#5A5A40]">
+            <X className="w-8 h-8" />
           </div>
-          <h3 className="text-xl font-serif font-bold text-[#2A2A2A]">Profile Not Loaded</h3>
-          <p className="text-sm text-[#5A5A40] leading-relaxed">Please complete onboarding to create your profile.</p>
+          <h3 className="text-xl font-serif font-bold text-[#2A2A2A]">Profile Setup Incomplete</h3>
+          <p className="text-sm text-[#5A5A40] leading-relaxed">
+            You paused your onboarding before finishing. Continue where you left off to activate your matrimony profile.
+          </p>
+          {onContinueOnboarding && (
+            <button
+              type="button"
+              onClick={onContinueOnboarding}
+              className="w-full py-3 bg-[#5A5A40] hover:bg-[#4A4A30] text-white rounded-xl font-bold text-xs uppercase tracking-wider transition-colors shadow-xs cursor-pointer"
+            >
+              Continue Onboarding
+            </button>
+          )}
         </div>
       </div>
     );

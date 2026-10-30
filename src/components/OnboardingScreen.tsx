@@ -1,8 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Geolocation } from '@capacitor/geolocation';
 import { PushNotifications } from '@capacitor/push-notifications';
-import { resizeFile } from 'react-image-file-resizer';
 import CountryFlag from 'react-country-flag';
+import { loadOnboardingDraft, saveOnboardingDraft, clearOnboardingDraft, setOnboardingCompleted } from '../lib/onboardingDraft';
+import { syncOnboardingEntryToSupabase, resetOnboardingProfileInSupabase, getPersistentUserId } from '../lib/supabase';
 const isValidPhoneNumber = (phoneNumber: string) => {
   // Basic validation: Check if the phone number is not empty and contains only digits
   if (!phoneNumber) return false;
@@ -91,6 +92,8 @@ interface OnboardingScreenProps {
       avatarUrl?: string;
     }
   ) => void;
+  onExit?: () => void;
+  userId?: string;
 }
 
 const MONTH_NAMES = [
@@ -255,100 +258,90 @@ const SwipeablePickerColumn: React.FC<SwipeablePickerColumnProps> = ({
   );
 };
 
-interface OnboardingScreenProps {
-  onComplete: (
-    updatedFilters?: Partial<FilterState>,
-    userName?: string,
-    locationData?: { country?: string; city?: string; state?: string },
-    profileData?: {
-      name?: string;
-      gender?: string;
-      age?: number;
-      height?: string;
-      bio?: string;
-      religion?: string;
-      motherTongue?: string;
-      caste?: string;
-      maritalStatus?: string;
-      diet?: string;
-      education?: string;
-      profession?: string;
-      location?: { country?: string; city?: string; state?: string };
-      photos?: string[];
-      avatarUrl?: string;
-    }
-  ) => void;
-}
+export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete, onExit, userId }) => {
+  const effectiveUserId = userId || getPersistentUserId();
+  const initialDraftRef = useRef(loadOnboardingDraft());
+  const saved = initialDraftRef.current;
+  const isResumed = Boolean(saved && typeof saved.currentStep === 'number' && saved.currentStep > 0);
 
-export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete }) => {
-  const [currentStep, setCurrentStep] = useState(0);
+  const [currentStep, setCurrentStep] = useState<number>(() => {
+    if (saved && typeof saved.currentStep === 'number' && saved.currentStep >= 0 && saved.currentStep < 15) {
+      return saved.currentStep;
+    }
+    return 0;
+  });
   
   // Mandatory Location State
-  const [locationStatus, setLocationStatus] = useState<'idle' | 'requesting' | 'granted' | 'denied'>('idle');
-  const [locationCoords, setLocationCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [locationStatus, setLocationStatus] = useState<'idle' | 'requesting' | 'granted' | 'denied'>(saved?.locationStatus || 'idle');
+  const [locationCoords, setLocationCoords] = useState<{ lat: number; lng: number } | null>(saved?.locationCoords ?? null);
   const [locationError, setLocationError] = useState<string | null>(null);
 
   // Mandatory Notification State
-  const [notificationStatus, setNotificationStatus] = useState<'idle' | 'requesting' | 'granted' | 'denied'>('idle');
+  const [notificationStatus, setNotificationStatus] = useState<'idle' | 'requesting' | 'granted' | 'denied'>(saved?.notificationStatus || 'idle');
   const [notificationError, setNotificationError] = useState<string | null>(null);
 
   // User Profile Name & DOB Carousel State
-  const [firstName, setFirstName] = useState<string>('');
+  const [firstName, setFirstName] = useState<string>(saved?.firstName || '');
   const [nameError, setNameError] = useState<string | null>(null);
   
   const currentYear = new Date().getFullYear();
   const maxYearAllowed = currentYear - 18; // Maximum year to meet 18+ requirement
 
-  const [selectedDay, setSelectedDay] = useState<number>(15);
-  const [selectedMonth, setSelectedMonth] = useState<number>(8); // 8 = August
-  const [selectedYear, setSelectedYear] = useState<number>(currentYear - 25); // e.g., 2001
+  const [selectedDay, setSelectedDay] = useState<number>(saved?.selectedDay ?? 15);
+  const [selectedMonth, setSelectedMonth] = useState<number>(saved?.selectedMonth ?? 8); // 8 = August
+  const [selectedYear, setSelectedYear] = useState<number>(saved?.selectedYear ?? (currentYear - 25)); // e.g., 2001
 
-  const [dob, setDob] = useState<string>('');
+  const [dob, setDob] = useState<string>(saved?.dob || '');
   const [dobError, setDobError] = useState<string | null>(null);
+
+  const daysInCurrentMonth = getDaysInMonth(selectedYear, selectedMonth);
+  const currentEffectiveDay = Math.min(selectedDay, daysInCurrentMonth);
+  const calculatedAge = calculateAge(selectedYear, selectedMonth, currentEffectiveDay);
+  const isUnder18 = calculatedAge < 18;
 
 
   // Interactive Onboarding Preferences
-  const [lookingForGender, setLookingForGender] = useState<'Female' | 'Male' | 'All'>('Female');
-  const [maritalStatus, setMaritalStatus] = useState<string>('Never Married');
-  const [verifiedOnly, setVerifiedOnly] = useState<boolean>(false);
-  const [ageRange, setAgeRange] = useState<{ min: number; max: number }>({ min: 22, max: 32 });
+  const [lookingForGender, setLookingForGender] = useState<'Female' | 'Male' | 'All'>(saved?.lookingForGender || 'Female');
+  const [maritalStatus, setMaritalStatus] = useState<string>(saved?.maritalStatus || 'Never Married');
+  const [verifiedOnly, setVerifiedOnly] = useState<boolean>(saved?.verifiedOnly ?? false);
+  const [ageRange, setAgeRange] = useState<{ min: number; max: number }>(saved?.ageRange || { min: 22, max: 32 });
 
   // Extended Profile Onboarding States
-  const [userGender, setUserGender] = useState<'Male' | 'Female' | ''>('');
+  const [userGender, setUserGender] = useState<'Male' | 'Female' | ''>(saved?.userGender || '');
   const [genderError, setGenderError] = useState<string | null>(null);
 
-  const [heightFeet, setHeightFeet] = useState<number | ''>('');
-  const [heightInches, setHeightInches] = useState<number | ''>('');
+  const [heightFeet, setHeightFeet] = useState<number | ''>(saved?.heightFeet ?? '');
+  const [heightInches, setHeightInches] = useState<number | ''>(saved?.heightInches ?? '');
   const [heightError, setHeightError] = useState<string | null>(null);
 
-  const [country, setCountry] = useState<string>('');
-  const [pulledLocation, setPulledLocation] = useState<string>('');
-  const [hasPulledLocation, setHasPulledLocation] = useState<boolean>(false);
+  const [country, setCountry] = useState<string>(saved?.country || '');
+  const [pulledLocation, setPulledLocation] = useState<string>(saved?.pulledLocation || '');
+  const [hasPulledLocation, setHasPulledLocation] = useState<boolean>(saved?.hasPulledLocation ?? false);
   const [countryError, setCountryError] = useState<string | null>(null);
   const [isDetectingCountry, setIsDetectingCountry] = useState<boolean>(false);
 
-  const [educationLevel, setEducationLevel] = useState<string>('');
-  const [schoolOrUniversity, setSchoolOrUniversity] = useState<string>('');
-  const [profession, setProfession] = useState<string>('');
-  const [userRelationshipStatus, setUserRelationshipStatus] = useState<'Never Married' | 'Divorced' | 'Widowed' | ''>('');
-  const [showRelationshipOnProfile, setShowRelationshipOnProfile] = useState<boolean>(true);
+  const [educationLevel, setEducationLevel] = useState<string>(saved?.educationLevel || '');
+  const [schoolOrUniversity, setSchoolOrUniversity] = useState<string>(saved?.schoolOrUniversity || '');
+  const [profession, setProfession] = useState<string>(saved?.profession || '');
+  const [userRelationshipStatus, setUserRelationshipStatus] = useState<'Never Married' | 'Divorced' | 'Widowed' | ''>(saved?.userRelationshipStatus || '');
+  const [showRelationshipOnProfile, setShowRelationshipOnProfile] = useState<boolean>(saved?.showRelationshipOnProfile ?? true);
 
-  const [haveKids, setHaveKids] = useState<'Yes' | 'No' | ''>('');
-  const [showHaveKidsOnProfile, setShowHaveKidsOnProfile] = useState<boolean>(true);
+  const [haveKids, setHaveKids] = useState<'Yes' | 'No' | ''>(saved?.haveKids || '');
+  const [showHaveKidsOnProfile, setShowHaveKidsOnProfile] = useState<boolean>(saved?.showHaveKidsOnProfile ?? true);
 
-  const [wantKids, setWantKids] = useState<'Yes' | 'No' | ''>('');
-  const [showWantKidsOnProfile, setShowWantKidsOnProfile] = useState<boolean>(true);
+  const [wantKids, setWantKids] = useState<'Yes' | 'No' | ''>(saved?.wantKids || '');
+  const [showWantKidsOnProfile, setShowWantKidsOnProfile] = useState<boolean>(saved?.showWantKidsOnProfile ?? true);
 
-  const [datingIntentions, setDatingIntentions] = useState<'Marriage Focused' | 'Figuring It Out' | ''>('');
-  const [showDatingIntentionsOnProfile, setShowDatingIntentionsOnProfile] = useState<boolean>(true);
+  const [datingIntentions, setDatingIntentions] = useState<'Marriage Focused' | 'Figuring It Out' | ''>(saved?.datingIntentions || '');
+  const [showDatingIntentionsOnProfile, setShowDatingIntentionsOnProfile] = useState<boolean>(saved?.showDatingIntentionsOnProfile ?? true);
 
-  const [marriageConfirmation, setMarriageConfirmation] = useState<boolean>(false);
+  const [marriageConfirmation, setMarriageConfirmation] = useState<boolean>(saved?.marriageConfirmation ?? false);
   const [lifeBackgroundError, setLifeBackgroundError] = useState<string | null>(null);
 
   // Photos state (3 mandatory photos: 1 main + 2 additional)
-  const [mainPhoto, setMainPhoto] = useState<string>('');
-  const [photo2, setPhoto2] = useState<string>('');
-  const [photo3, setPhoto3] = useState<string>('');
+  const [mainPhoto, setMainPhoto] = useState<string>(saved?.mainPhoto || '');
+  const [photo2, setPhoto2] = useState<string>(saved?.photo2 || '');
+  const [photo3, setPhoto3] = useState<string>(saved?.photo3 || '');
   const [photosError, setPhotosError] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [uploadProgress, setUploadProgress] = useState<number>(0);
@@ -357,20 +350,22 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete }
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
 
   // About Me State (Optional, max 750 characters)
-  const [aboutMe, setAboutMe] = useState<string>('');
+  const [aboutMe, setAboutMe] = useState<string>(saved?.aboutMe || '');
 
   // Interests State (Choose up to 3 per section, select at least 6 total - NOT pre-selected)
-  const [selectedInterests, setSelectedInterests] = useState<Record<string, string[]>>({});
+  const [selectedInterests, setSelectedInterests] = useState<Record<string, string[]>>(saved?.selectedInterests || {});
   const [interestsError, setInterestsError] = useState<string | null>(null);
 
   // Personality Prompts State (Optional)
-  const [selectedPrompt, setSelectedPrompt] = useState<string>('');
-  const [promptAnswer, setPromptAnswer] = useState<string>('');
+  const [selectedPrompt, setSelectedPrompt] = useState<string>(saved?.selectedPrompt || '');
+  const [promptAnswer, setPromptAnswer] = useState<string>(saved?.promptAnswer || '');
 
   // Contact Info State
-  const [emailAddress, setEmailAddress] = useState<string>('');
-  const [phoneNumber, setPhoneNumber] = useState<string>('');
-  const [detectedPhoneInfo, setDetectedPhoneInfo] = useState<{ code: string; flag: string; countryCode: string }>({ code: '+91', flag: '🇮🇳', countryCode: 'IN' });
+  const [emailAddress, setEmailAddress] = useState<string>(saved?.emailAddress || '');
+  const [phoneNumber, setPhoneNumber] = useState<string>(saved?.phoneNumber || '');
+  const [detectedPhoneInfo, setDetectedPhoneInfo] = useState<{ code: string; flag: string; countryCode: string }>(
+    saved?.detectedPhoneInfo || { code: '+91', flag: '🇮🇳', countryCode: 'IN' }
+  );
   const [showCountryPicker, setShowCountryPicker] = useState<boolean>(false);
 
   // List of countries with their codes and flags
@@ -393,8 +388,9 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete }
     return countryCode === 'IN' ? '🇮🇳' : countryCode;
   };
 
-  // Auto-detect user's country based on locale
+  // Auto-detect user's country based on locale (only if not restored from draft)
   useEffect(() => {
+    if (saved?.detectedPhoneInfo) return;
     const userLocale = navigator.language || 'en-US';
     const countryCode = userLocale.split('-')[1] || 'IN';
     const flag = getCountryFlag(countryCode);
@@ -407,15 +403,14 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete }
       // Default to India if country not found
       setDetectedPhoneInfo({ code: '+91', flag: '🇮🇳', countryCode: 'IN' });
     }
-
   }, []);
   const [contactError, setContactError] = useState<string | null>(null);
 
   // Verification State
-  const [selfieVerified, setSelfieVerified] = useState<boolean>(false);
-  const [idUploaded, setIdUploaded] = useState<boolean>(false);
-  const [idFrontImage, setIdFrontImage] = useState<string | null>(null);
-  const [idBackImage, setIdBackImage] = useState<string | null>(null);
+  const [selfieVerified, setSelfieVerified] = useState<boolean>(saved?.selfieVerified ?? false);
+  const [idUploaded, setIdUploaded] = useState<boolean>(saved?.idUploaded ?? false);
+  const [idFrontImage, setIdFrontImage] = useState<string | null>(saved?.idFrontImage ?? null);
+  const [idBackImage, setIdBackImage] = useState<string | null>(saved?.idBackImage ?? null);
   const [activeIdPicker, setActiveIdPicker] = useState<'front' | 'back' | null>(null);
   const [showIdOptionsModal, setShowIdOptionsModal] = useState<boolean>(false);
   const [idCameraMode, setIdCameraMode] = useState<'front' | 'back' | null>(null);
@@ -429,6 +424,223 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete }
   const [isScanning, setIsScanning] = useState<boolean>(false);
   const [faceAligned, setFaceAligned] = useState<boolean>(false);
   const [verificationError, setVerificationError] = useState<string | null>(null);
+
+  // Auto-save draft on any change
+  useEffect(() => {
+    saveOnboardingDraft({
+      currentStep,
+      locationStatus,
+      locationCoords,
+      notificationStatus,
+      firstName,
+      selectedDay,
+      selectedMonth,
+      selectedYear,
+      dob,
+      lookingForGender,
+      maritalStatus,
+      verifiedOnly,
+      ageRange,
+      userGender,
+      heightFeet,
+      heightInches,
+      country,
+      pulledLocation,
+      hasPulledLocation,
+      educationLevel,
+      schoolOrUniversity,
+      profession,
+      userRelationshipStatus,
+      showRelationshipOnProfile,
+      haveKids,
+      showHaveKidsOnProfile,
+      wantKids,
+      showWantKidsOnProfile,
+      datingIntentions,
+      showDatingIntentionsOnProfile,
+      marriageConfirmation,
+      mainPhoto,
+      photo2,
+      photo3,
+      aboutMe,
+      selectedInterests,
+      selectedPrompt,
+      promptAnswer,
+      emailAddress,
+      phoneNumber,
+      detectedPhoneInfo,
+      selfieVerified,
+      idUploaded,
+      idFrontImage,
+      idBackImage,
+    });
+  }, [
+    currentStep,
+    locationStatus,
+    locationCoords,
+    notificationStatus,
+    firstName,
+    selectedDay,
+    selectedMonth,
+    selectedYear,
+    dob,
+    lookingForGender,
+    maritalStatus,
+    verifiedOnly,
+    ageRange,
+    userGender,
+    heightFeet,
+    heightInches,
+    country,
+    pulledLocation,
+    hasPulledLocation,
+    educationLevel,
+    schoolOrUniversity,
+    profession,
+    userRelationshipStatus,
+    showRelationshipOnProfile,
+    haveKids,
+    showHaveKidsOnProfile,
+    wantKids,
+    showWantKidsOnProfile,
+    datingIntentions,
+    showDatingIntentionsOnProfile,
+    marriageConfirmation,
+    mainPhoto,
+    photo2,
+    photo3,
+    aboutMe,
+    selectedInterests,
+    selectedPrompt,
+    promptAnswer,
+    emailAddress,
+    phoneNumber,
+    detectedPhoneInfo,
+    selfieVerified,
+    idUploaded,
+    idFrontImage,
+    idBackImage,
+  ]);
+
+  const [showRestartModal, setShowRestartModal] = useState<boolean>(false);
+
+  // Sync to Supabase profiles table on every entry (overwrites/updates the exact same row by id)
+  useEffect(() => {
+    const heightStr = heightFeet !== '' && heightInches !== '' ? `${heightFeet}' ${heightInches}"` : '';
+    const parts = (pulledLocation || '').split(',').map((p) => p.trim());
+    const city = parts[0] || '';
+    const state = parts[1] || '';
+    const photosList = [mainPhoto, photo2, photo3].filter(Boolean);
+
+    const debounceTimer = setTimeout(() => {
+      syncOnboardingEntryToSupabase(effectiveUserId, {
+        onboarding_step: currentStep,
+        onboarding_completed: false,
+        name: firstName ? toPascalCase(firstName) : '',
+        gender: userGender || '',
+        age: calculatedAge || 0,
+        height: heightStr,
+        city,
+        state,
+        country: country || 'India',
+        education: educationLevel || '',
+        highest_degree: educationLevel || '',
+        school_or_university: schoolOrUniversity || '',
+        profession: profession || '',
+        marital_status: userRelationshipStatus || maritalStatus || '',
+        photos: photosList,
+        avatar_url: mainPhoto || '',
+        bio: aboutMe || '',
+      });
+    }, 400);
+
+    return () => clearTimeout(debounceTimer);
+  }, [
+    effectiveUserId,
+    currentStep,
+    firstName,
+    calculatedAge,
+    userGender,
+    heightFeet,
+    heightInches,
+    country,
+    pulledLocation,
+    educationLevel,
+    schoolOrUniversity,
+    profession,
+    userRelationshipStatus,
+    maritalStatus,
+    mainPhoto,
+    photo2,
+    photo3,
+    aboutMe,
+  ]);
+
+  const confirmRestart = async () => {
+    setShowRestartModal(false);
+    clearOnboardingDraft();
+
+    // Overwrite the EXACT SAME line in profiles table in Supabase so no extra rows are created
+    await resetOnboardingProfileInSupabase(effectiveUserId);
+
+    setCurrentStep(0);
+    setLocationStatus('idle');
+    setLocationCoords(null);
+    setLocationError(null);
+    setNotificationStatus('idle');
+    setNotificationError(null);
+    setFirstName('');
+    setNameError(null);
+    setSelectedDay(15);
+    setSelectedMonth(8);
+    setSelectedYear(currentYear - 25);
+    setDob('');
+    setDobError(null);
+    setLookingForGender('Female');
+    setMaritalStatus('Never Married');
+    setVerifiedOnly(false);
+    setAgeRange({ min: 22, max: 32 });
+    setUserGender('');
+    setGenderError(null);
+    setHeightFeet('');
+    setHeightInches('');
+    setHeightError(null);
+    setCountry('');
+    setPulledLocation('');
+    setHasPulledLocation(false);
+    setCountryError(null);
+    setEducationLevel('');
+    setSchoolOrUniversity('');
+    setProfession('');
+    setUserRelationshipStatus('');
+    setShowRelationshipOnProfile(true);
+    setHaveKids('');
+    setShowHaveKidsOnProfile(true);
+    setWantKids('');
+    setShowWantKidsOnProfile(true);
+    setDatingIntentions('');
+    setShowDatingIntentionsOnProfile(true);
+    setMarriageConfirmation(false);
+    setLifeBackgroundError(null);
+    setMainPhoto('');
+    setPhoto2('');
+    setPhoto3('');
+    setPhotosError(null);
+    setAboutMe('');
+    setSelectedInterests({});
+    setInterestsError(null);
+    setSelectedPrompt('');
+    setPromptAnswer('');
+    setEmailAddress('');
+    setPhoneNumber('');
+    setContactError(null);
+    setSelfieVerified(false);
+    setIdUploaded(false);
+    setIdFrontImage(null);
+    setIdBackImage(null);
+    setVerificationError(null);
+    initialDraftRef.current = null;
+  };
 
   const handleIdFileSelect = (e: React.ChangeEvent<HTMLInputElement>, side: 'front' | 'back') => {
     const file = e.target.files?.[0];
@@ -681,7 +893,7 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete }
     try {
       if (isNative) {
         const result = await PushNotifications.requestPermissions();
-        if (result.receive === 'granted' || result.receive === 'provisional') {
+        if (result.receive === 'granted' || (result.receive as string) === 'provisional') {
           setNotificationStatus('granted');
         } else {
           setNotificationStatus('denied');
@@ -954,6 +1166,30 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete }
       avatarUrl: mainPhoto || undefined
     };
 
+    // Mark onboarding complete & clear draft
+    setOnboardingCompleted();
+
+    // Final write into Supabase profiles on the exact same row (overwriting in-place)
+    syncOnboardingEntryToSupabase(effectiveUserId, {
+      onboarding_step: 14,
+      onboarding_completed: true,
+      onboarding_completed_at: new Date().toISOString(),
+      name: formattedName,
+      gender: userGender || '',
+      age: calculatedAge,
+      height: heightFeet !== '' && heightInches !== '' ? `${heightFeet}' ${heightInches}"` : '',
+      city: locationData.city || '',
+      state: locationData.state || '',
+      country: locationData.country || 'India',
+      education: educationLevel || '',
+      highest_degree: educationLevel || '',
+      profession: profession || '',
+      marital_status: maritalStatus || '',
+      bio: aboutMe.trim() || '',
+      photos: [mainPhoto, photo2, photo3].filter(Boolean) as string[],
+      avatar_url: mainPhoto || '',
+    });
+
     onComplete(
       {
         gender: lookingForGender,
@@ -973,11 +1209,6 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete }
     );
   };
 
-  const daysInCurrentMonth = getDaysInMonth(selectedYear, selectedMonth);
-  const currentEffectiveDay = Math.min(selectedDay, daysInCurrentMonth);
-  const calculatedAge = calculateAge(selectedYear, selectedMonth, currentEffectiveDay);
-  const isUnder18 = calculatedAge < 18;
-
   const isNextDisabled =
     (currentStep === 2 && (!firstName.trim() || /\d/.test(firstName) || !isValidNameString(firstName))) ||
     (currentStep === 3 && isUnder18) ||
@@ -989,12 +1220,13 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete }
 
   return (
     <div className="absolute inset-0 z-50 bg-[#f8f7f2] text-[#2A2A2A] flex flex-col justify-between overflow-hidden animate-fadeIn font-sans">
-      {/* Top Header with Back Arrow and Progress Bar */}
+      {/* Top Header with Back Arrow, Progress Bar, and Exit */}
       <div className="w-full max-w-md mx-auto pt-6 px-5 sm:px-8 flex items-center gap-2.5 shrink-0">
         {currentStep > 0 ? (
           <button
+            type="button"
             onClick={handleBack}
-            className="p-1.5 rounded-full text-[#5A5A40] hover:bg-[#5A5A40]/10 transition-all active:scale-95 shrink-0"
+            className="p-1.5 rounded-full text-[#5A5A40] hover:bg-[#5A5A40]/10 transition-all active:scale-95 shrink-0 cursor-pointer"
             title="Previous Step"
           >
             <ChevronLeft className="w-5 h-5" />
@@ -1009,7 +1241,72 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete }
             style={{ width: `${((currentStep + 1) / totalSteps) * 100}%` }}
           />
         </div>
+
+        {onExit ? (
+          <button
+            type="button"
+            onClick={onExit}
+            className="p-1.5 rounded-full text-[#5A5A40]/70 hover:text-[#5A5A40] hover:bg-[#5A5A40]/10 transition-all active:scale-95 shrink-0 flex items-center justify-center cursor-pointer"
+            title="Save & Exit (You can resume anytime)"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        ) : (
+          <div className="w-8 h-8 shrink-0" />
+        )}
       </div>
+
+      {/* Resumed banner if returning to an in-progress onboarding */}
+      {currentStep > 0 && (
+        <div className="w-full max-w-md mx-auto px-5 sm:px-8 pt-2 flex items-center justify-between text-[11px] text-[#5A5A40] shrink-0 animate-fadeIn">
+          <span className="flex items-center gap-1 font-medium bg-[#5A5A40]/10 px-2.5 py-0.5 rounded-full">
+            <Sparkles className="w-3 h-3 text-[#5A5A40]" />
+            Step {currentStep + 1} of {totalSteps}
+          </span>
+          <button
+            type="button"
+            onClick={() => setShowRestartModal(true)}
+            className="text-stone-500 hover:text-stone-800 underline transition-colors cursor-pointer flex items-center gap-1 py-1 px-1.5"
+            title="Clear saved progress and start from Step 1"
+          >
+            <RotateCcw className="w-3 h-3" />
+            <span>Start over</span>
+          </button>
+        </div>
+      )}
+
+      {/* In-app Safe Confirmation Modal for Restarting Onboarding */}
+      {showRestartModal && (
+        <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-white rounded-3xl p-6 max-w-xs w-full shadow-2xl border border-[#5A5A40]/20 text-center space-y-4">
+            <div className="w-12 h-12 rounded-full bg-amber-100 text-[#5A5A40] flex items-center justify-center mx-auto shadow-inner">
+              <RotateCcw className="w-6 h-6" />
+            </div>
+            <div>
+              <h3 className="font-serif font-bold text-lg text-[#2A2A2A]">Start Over from Step 1?</h3>
+              <p className="text-xs text-[#5A5A40] mt-1.5 leading-relaxed">
+                This will clear your current onboarding progress and return to the very beginning.
+              </p>
+            </div>
+            <div className="flex gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowRestartModal(false)}
+                className="flex-1 py-2.5 px-3 rounded-xl border border-stone-300 text-stone-700 font-bold text-xs hover:bg-stone-50 transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmRestart}
+                className="flex-1 py-2.5 px-3 rounded-xl bg-rose-700 hover:bg-rose-800 text-white font-bold text-xs transition-colors shadow-xs cursor-pointer"
+              >
+                Yes, Reset
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Main Slide Content Area */}
       <div className="flex-1 overflow-y-auto px-5 py-6 sm:px-8 max-w-xl mx-auto w-full flex flex-col items-center">
@@ -2515,7 +2812,7 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete }
                       onClick={() => setShowCountryPicker(true)}
                       className="px-3 py-3 rounded-xl border border-[#5A5A40]/30 bg-[#5A5A40]/5 text-xs font-bold text-[#2A2A2A] flex items-center gap-1.5 shrink-0 shadow-xs"
                     >
-                      <CountryFlag countryCode={detectedPhoneInfo.countryCode} svg className="w-5 h-5" />
+                      <CountryFlag countryCode={detectedPhoneInfo.countryCode || 'US'} svg style={{ width: '1.25rem', height: '1.25rem' }} />
                       <span>{detectedPhoneInfo.code}</span>
                     </button>
                     {showCountryPicker && (
@@ -2532,7 +2829,7 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete }
                               }}
                               className="flex items-center gap-2 px-3 py-2 text-left hover:bg-[#5A5A40]/5 transition-colors"
                             >
-                              <CountryFlag countryCode={country.countryCode} svg className="w-5 h-5" />
+                              <CountryFlag countryCode={country.countryCode || 'US'} svg style={{ width: '1.25rem', height: '1.25rem' }} />
                               <span>{country.code}</span>
                             </button>
                           ))}

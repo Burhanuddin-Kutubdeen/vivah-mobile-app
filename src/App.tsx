@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { CandidateProfile, FilterState, ChatMessage, ConnectionRequest, SupabaseConfig, TabType } from './types';
-import { getSavedSupabaseConfig, syncLikeToSupabase, syncUnlikeToSupabase, syncMessageToSupabase, syncProfileToSupabase, fetchInitialSupabaseData, getSupabaseClient } from './lib/supabase';
+import { getSavedSupabaseConfig, syncLikeToSupabase, syncUnlikeToSupabase, syncMessageToSupabase, syncProfileToSupabase, fetchInitialSupabaseData, getSupabaseClient, getPersistentUserId, setPersistentUserId } from './lib/supabase';
 import { toPascalCase } from './lib/formatters';
 import { useWebRTCCall } from './hooks/useWebRTCCall';
 import { useDailyCredits } from './hooks/useDailyCredits';
@@ -93,8 +93,14 @@ export default function App() {
   // Login / Signup State (set to false to show post-signup onboarding & main views)
   const [showLoginScreen, setShowLoginScreen] = useState<boolean>(false);
 
-  // Onboarding State
-  const [showOnboarding, setShowOnboarding] = useState<boolean>(true);
+  // Onboarding State (check completion or resume draft)
+  const [showOnboarding, setShowOnboarding] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('vivah_onboarding_completed_v1') !== 'true';
+    } catch {
+      return true;
+    }
+  });
 
   const handleLoginSuccess = async (userEmail?: string, userName?: string) => {
     try { localStorage.setItem('vivah_logged_in_v1', 'true'); } catch { /* ignore */ }
@@ -106,6 +112,7 @@ export default function App() {
         try {
           const { data: { session } } = await supabase.auth.getSession();
           if (session?.user?.id) {
+            setPersistentUserId(session.user.id);
             const { data, error } = await supabase
               .from('profiles')
               .select('*')
@@ -268,9 +275,10 @@ export default function App() {
     }
 
     // Create a complete user profile object
+    const currentUserId = userProfile?.id || 'current-user-123';
     const updatedProfile = {
-      id: session?.user?.id || 'current-user-123',
-      user_id: session?.user?.id || 'current-user-123',
+      id: currentUserId,
+      user_id: currentUserId,
       name: userName || '',
       gender: profileData?.gender || '',
       age: profileData?.age || 0,
@@ -356,6 +364,7 @@ export default function App() {
         try {
           const { data: { session } } = await supabase.auth.getSession();
           if (session?.user?.id) {
+            setPersistentUserId(session.user.id);
             const { data, error } = await supabase
               .from('profiles')
               .select('*')
@@ -519,6 +528,20 @@ export default function App() {
       {/* Main Container */}
       <FlutterDeviceFrame device="fullscreen">
         <div className="w-full h-full flex flex-col overflow-hidden bg-slate-950 relative">
+          {/* Incomplete Onboarding Resume Banner */}
+          {!showOnboarding && !showLoginScreen && localStorage.getItem('vivah_onboarding_completed_v1') !== 'true' && (
+            <div className="bg-[#5A5A40] text-white px-3.5 py-2 flex items-center justify-between text-xs z-30 shrink-0 shadow-xs">
+              <span className="truncate pr-2 font-medium">Profile setup paused &bull; Continue where you left off</span>
+              <button
+                type="button"
+                onClick={() => setShowOnboarding(true)}
+                className="px-2.5 py-1 bg-white text-[#5A5A40] hover:bg-stone-100 rounded-md font-bold text-[11px] uppercase tracking-wider shrink-0 transition-all shadow-xs cursor-pointer"
+              >
+                Resume
+              </button>
+            </div>
+          )}
+
           {/* Active Tab View Render */}
           {activeTab === 'discover' && (
             <DiscoverView
@@ -583,6 +606,7 @@ export default function App() {
               credits={credits}
               maxCredits={maxCredits}
               timeUntilReset={timeUntilReset}
+              onContinueOnboarding={() => setShowOnboarding(true)}
             />
           )}
 
@@ -624,7 +648,11 @@ export default function App() {
 
           {/* Onboarding Screens (Shows after Login/Signup if not completed yet or replayed) */}
           {showOnboarding && !showLoginScreen && (
-            <OnboardingScreen onComplete={handleCompleteOnboarding} />
+            <OnboardingScreen
+              userId={userProfile?.id || getPersistentUserId()}
+              onComplete={handleCompleteOnboarding}
+              onExit={() => setShowOnboarding(false)}
+            />
           )}
 
           {/* Login / Signup Screen (Shows BEFORE Onboarding on initial app open or after logout) */}
